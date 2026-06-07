@@ -54,7 +54,7 @@ impl AmazonSession {
 
     pub async fn init(&mut self) -> Result<()> {
         self.seed_currency_cookies();
-        let token = self.fetch_glow_token().await.unwrap_or_default();
+        let token = self.fetch_glow_token().await?;
         self.set_delivery_zip(&token).await?;
         self.seed_currency_cookies();
         Ok(())
@@ -81,32 +81,64 @@ impl AmazonSession {
     }
 
     async fn fetch_glow_token(&self) -> Result<String> {
-        let url = format!("{AMAZON_BASE}/?language=ja_JP");
+        let urls = [
+            format!("{AMAZON_BASE}/?language=ja_JP"),
+            config::product_url(config::SELF_CHECK_ASIN),
+        ];
+
+        let mut last_err: Option<anyhow::Error> = None;
+        for url in urls {
+            match self.fetch_page_html(&url).await {
+                Ok(html) => {
+                    if is_waf_challenge(&html) {
+                        last_err = Some(anyhow!("页面触发 AWS WAF 验证: {url}"));
+                        continue;
+                    }
+                    if let Some(token) = extract_glow_token(&html) {
+                        return Ok(token);
+                    }
+                    last_err = Some(anyhow!("未在页面中找到 glowValidationToken: {url}"));
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow!("未找到 glowValidationToken")))
+    }
+
+    async fn fetch_page_html(&self, url: &str) -> Result<String> {
+        self.seed_currency_cookies();
         let response = self
             .client
-            .get(&url)
-            .headers(default_headers(None))
+            .get(url)
+            .headers(default_headers(Some(AMAZON_BASE)))
             .send()
             .await
-            .context("failed to fetch Amazon homepage")?
+            .with_context(|| format!("failed to fetch page {url}"))?
             .error_for_status()
-            .context("homepage returned error status")?;
+            .with_context(|| format!("page returned error status: {url}"))?;
 
-        let html = response.text().await?;
-        extract_glow_token(&html).ok_or_else(|| anyhow!("未找到 glowValidationToken"))
+        response
+            .text()
+            .await
+            .with_context(|| format!("failed to read page body: {url}"))
     }
 
     async fn set_delivery_zip(&mut self, token: &str) -> Result<()> {
+        if token.is_empty() {
+            anyhow::bail!("设置配送地区失败：缺少 CSRF token（首页可能被 WAF 拦截）");
+        }
+
         let url = format!("{AMAZON_BASE}/gp/delivery/ajax/address-change.html");
         let body = format!(
-            "locationType=LOCATION_INPUT&zipCode={}&storeContext=generic&deviceType=web&pageType=Gateway&actionSource=glow",
+            "locationType=LOCATION_INPUT&zipCode={}&storeContext=generic&deviceType=web&pageType=Gateway&actionSource=glow&almBrandId=undefined",
             self.zip_code
         );
 
         let mut headers = default_headers(Some(AMAZON_BASE));
-        if !token.is_empty() {
-            headers.insert("anti-csrftoken-a2z", HeaderValue::from_str(token)?);
-        }
+        headers.insert("anti-csrftoken-a2z", HeaderValue::from_str(token)?);
         headers.insert(
             "content-type",
             HeaderValue::from_static("application/x-www-form-urlencoded;charset=UTF-8"),
@@ -126,7 +158,9 @@ impl AmazonSession {
 
         let text = response.text().await?;
         if text.trim().is_empty() {
-            anyhow::bail!("设置配送地区失败：Amazon 返回空响应");
+            anyhow::bail!(
+                "设置配送地区失败：Amazon 返回空响应（可能缺少有效 CSRF token 或会话未建立）"
+            );
         }
         if !text.contains("\"successful\":1") && !text.contains("\"successful\": 1") {
             anyhow::bail!("设置配送地区失败: {text}");
@@ -218,6 +252,10 @@ impl AmazonSession {
             .map(|loc| loc.contains(&self.zip_code) || loc.contains("渋谷") || loc.contains("東京"))
             .unwrap_or(false)
     }
+}
+
+pub fn is_waf_challenge(html: &str) -> bool {
+    html.contains("awsWaf") || html.contains("gokuProps") || html.contains("AwsWafIntegration")
 }
 
 pub fn extract_glow_token(html: &str) -> Option<String> {
@@ -533,6 +571,19 @@ mod tests {
     #[test]
     fn parses_yen_value() {
         assert_eq!(parse_yen_value("￥3,951"), Some(3951));
+    }
+
+    #[test]
+    fn detects_waf_challenge_page() {
+        let html = r#"<!DOCTYPE html><script>window.gokuProps={};AwsWafIntegration.getToken()</script>"#;
+        assert!(is_waf_challenge(html));
+    }
+
+    #[test]
+    fn extracts_token_from_product_page_fixture() {
+        let html = r#"<input id="glowValidationToken" name="glow-validation-token" type="hidden" value="abc123" />"#;
+        assert!(!is_waf_challenge(html));
+        assert_eq!(extract_glow_token(html), Some("abc123".to_string()));
     }
 
     #[test]
