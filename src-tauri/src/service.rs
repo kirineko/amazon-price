@@ -72,6 +72,7 @@ pub async fn start_scrape(
         opts.concurrency,
         std::sync::Arc::clone(&state.cancel_flag),
         on_progress,
+        true,
     )
     .await
     .map_err(|e| crate::config::friendly_network_error(e))?;
@@ -106,6 +107,7 @@ pub async fn refresh_one(
         1,
         std::sync::Arc::clone(&state.cancel_flag),
         on_progress,
+        false,
     )
     .await
     .map_err(|e| crate::config::friendly_network_error(e))?;
@@ -169,7 +171,7 @@ pub async fn run_self_check(
 ) -> Result<SelfCheckResult, String> {
     let zip = zip_code.unwrap_or_else(|| crate::config::DEFAULT_ZIP.to_string());
     let mut session = AmazonSession::new(&zip).map_err(|e| e.to_string())?;
-    let (ok, price_text, message) = self_check(&mut session)
+    let (ok, price_text, currency, message) = self_check(&mut session)
         .await
         .map_err(|e| crate::config::friendly_network_error(e))?;
     *state.session.lock() = Some(session);
@@ -177,6 +179,7 @@ pub async fn run_self_check(
         ok,
         asin: crate::config::SELF_CHECK_ASIN.to_string(),
         price_text,
+        currency,
         message,
     })
 }

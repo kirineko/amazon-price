@@ -40,6 +40,7 @@ import {
   parseSkus,
   refreshAll,
   refreshOne,
+  runSelfCheck,
   startScrape,
 } from "./api";
 import "./App.css";
@@ -68,11 +69,28 @@ function App({ onLogout }: AppProps) {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [sessionMessage, setSessionMessage] = useState("正在初始化会话...");
   const [selfCheckMessage, setSelfCheckMessage] = useState<string | null>(null);
+  const [cooldownMessage, setCooldownMessage] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
     const unlisten = listenScrapeProgress((payload) => {
       setProgress({ done: payload.done, total: payload.total });
+
+      if (payload.phase === "Cooling") {
+        const batchIndex = payload.batchIndex ?? 0;
+        const batchTotal = payload.batchTotal ?? 0;
+        const secs = payload.cooldownSecs ?? 30;
+        setCooldownMessage(
+          `批次 ${batchIndex}/${batchTotal} 完成，冷却 ${secs}s…`,
+        );
+        setLogs((current) => [
+          `[${new Date().toLocaleTimeString()}] 批次冷却 ${secs}s（${batchIndex}/${batchTotal}）`,
+          ...current.slice(0, 49),
+        ]);
+        return;
+      }
+
+      setCooldownMessage(null);
       setRows((current) =>
         current.map((row) =>
           row.asin === payload.row.asin ? payload.row : row,
@@ -89,7 +107,13 @@ function App({ onLogout }: AppProps) {
         setSessionMessage("正在连接 Amazon.co.jp（可能需要 10–30 秒）...");
         const session = await initSession();
         setSessionMessage(session.message);
-        setSelfCheckMessage("会话就绪");
+
+        const selfCheck = await runSelfCheck();
+        if (selfCheck.ok) {
+          setSelfCheckMessage(selfCheck.message);
+        } else {
+          setSelfCheckMessage(selfCheck.message);
+        }
       } catch (error) {
         if (error instanceof AuthError) {
           onLogout();
@@ -244,10 +268,14 @@ function App({ onLogout }: AppProps) {
   };
 
   const copyPriceValue = async (record: RowResult) => {
-    const value =
-      record.priceValue?.toString() ??
-      record.priceText?.replace(/[^\d]/g, "") ??
-      "";
+    let value = "";
+    if (record.priceText && /\./.test(record.priceText)) {
+      value = record.priceText.replace(/[^\d.]/g, "");
+    } else if (record.priceValue != null) {
+      value = record.priceValue.toString();
+    } else if (record.priceText) {
+      value = record.priceText.replace(/[^\d.]/g, "");
+    }
     if (!value) {
       message.warning("暂无可复制的价格");
       return;
@@ -376,17 +404,18 @@ function App({ onLogout }: AppProps) {
           <Alert
             className="session-alert"
             type={
-              selfCheckMessage === "会话就绪"
+              selfCheckMessage?.includes("自检通过")
                 ? "success"
                 : selfCheckMessage
-                  ? "info"
+                  ? "warning"
                   : "warning"
             }
             showIcon
             message={
-              selfCheckMessage
+              cooldownMessage ??
+              (selfCheckMessage
                 ? `${sessionMessage} · ${selfCheckMessage}`
-                : sessionMessage
+                : sessionMessage)
             }
           />
 

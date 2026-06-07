@@ -25,10 +25,16 @@ export interface ScrapeOptions {
   concurrency: number;
 }
 
+export type ScrapePhase = "Scraping" | "Cooling";
+
 export interface ScrapeProgress {
   done: number;
   total: number;
   row: RowResult;
+  phase?: ScrapePhase | null;
+  batchIndex?: number | null;
+  batchTotal?: number | null;
+  cooldownSecs?: number | null;
 }
 
 export interface SessionStatus {
@@ -42,6 +48,7 @@ export interface SelfCheckResult {
   ok: boolean;
   asin: string;
   priceText?: string | null;
+  currency?: string | null;
   message: string;
 }
 

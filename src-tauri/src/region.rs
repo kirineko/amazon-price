@@ -1,15 +1,20 @@
 use crate::config::{self, AMAZON_BASE, UNAVAILABLE_MARKERS};
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
+use reqwest::cookie::Jar;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, REFERER, USER_AGENT};
 use reqwest::Client;
 use scraper::{Html, Selector};
 use serde::Deserialize;
+use std::sync::Arc;
 use std::time::Duration;
+
+const JPY_CURRENCY: &str = "JPY";
 
 #[derive(Clone)]
 pub struct AmazonSession {
     pub client: Client,
+    cookie_jar: Arc<Jar>,
     pub zip_code: String,
     pub delivery_location: Option<String>,
 }
@@ -20,8 +25,9 @@ impl AmazonSession {
             anyhow::bail!("邮编格式无效，应为 123-4567");
         }
 
+        let cookie_jar = Arc::new(Jar::default());
         let client = Client::builder()
-            .cookie_store(true)
+            .cookie_provider(Arc::clone(&cookie_jar))
             .gzip(true)
             .brotli(true)
             .connect_timeout(Duration::from_secs(config::SESSION_CONNECT_TIMEOUT_SECS))
@@ -29,16 +35,28 @@ impl AmazonSession {
             .build()
             .context("failed to build HTTP client")?;
 
-        Ok(Self {
+        let session = Self {
             client,
+            cookie_jar,
             zip_code: zip_code.to_string(),
             delivery_location: None,
-        })
+        };
+        session.seed_currency_cookies();
+        Ok(session)
+    }
+
+    pub fn seed_currency_cookies(&self) {
+        if let Ok(url) = reqwest::Url::parse("https://www.amazon.co.jp/") {
+            self.cookie_jar.add_cookie_str("i18n-prefs=JPY", &url);
+            self.cookie_jar.add_cookie_str("lc-acbjp=ja_JP", &url);
+        }
     }
 
     pub async fn init(&mut self) -> Result<()> {
+        self.seed_currency_cookies();
         let token = self.fetch_glow_token().await.unwrap_or_default();
         self.set_delivery_zip(&token).await?;
+        self.seed_currency_cookies();
         Ok(())
     }
 
@@ -68,7 +86,6 @@ impl AmazonSession {
             .client
             .get(&url)
             .headers(default_headers(None))
-            .header("Cookie", "lc-acbjp=ja_JP; i18n-prefs=JPY")
             .send()
             .await
             .context("failed to fetch Amazon homepage")?
@@ -125,6 +142,7 @@ impl AmazonSession {
     }
 
     pub async fn fetch_delivery_location(&self) -> Result<Option<String>> {
+        self.seed_currency_cookies();
         let response = self
             .client
             .get(AMAZON_BASE)
@@ -137,7 +155,27 @@ impl AmazonSession {
         Ok(extract_delivery_location(&html))
     }
 
+    pub async fn fetch_search_html(&self, asin: &str) -> Result<String> {
+        self.seed_currency_cookies();
+        let url = config::search_url(asin);
+        let response = self
+            .client
+            .get(&url)
+            .headers(default_headers(Some(AMAZON_BASE)))
+            .send()
+            .await
+            .with_context(|| format!("failed to fetch search page for {asin}"))?
+            .error_for_status()
+            .with_context(|| format!("search page returned error status for {asin}"))?;
+
+        response
+            .text()
+            .await
+            .with_context(|| format!("failed to read search body for {asin}"))
+    }
+
     pub async fn fetch_product_html(&self, asin: &str) -> Result<String> {
+        self.seed_currency_cookies();
         let url = config::product_url(asin);
         let response = self
             .client
@@ -149,7 +187,29 @@ impl AmazonSession {
             .error_for_status()
             .with_context(|| format!("product page returned error status for {asin}"))?;
 
-        response.text().await.with_context(|| format!("failed to read body for {asin}"))
+        response
+            .text()
+            .await
+            .with_context(|| format!("failed to read body for {asin}"))
+    }
+
+    pub async fn fetch_price(&self, asin: &str) -> Result<ParsedProduct> {
+        self.seed_currency_cookies();
+
+        if let Ok(html) = self.fetch_search_html(asin).await {
+            if let Some(extracted) = parse_search_page(&html, asin) {
+                return Ok(ParsedProduct {
+                    price_text: extracted.text.clone(),
+                    price_value: extracted.value,
+                    currency: extracted.currency.clone(),
+                    page_asin: Some(asin.to_uppercase()),
+                    unavailable: false,
+                });
+            }
+        }
+
+        let html = self.fetch_product_html(asin).await?;
+        Ok(parse_product_page(&html, asin))
     }
 
     pub fn region_looks_valid(&self) -> bool {
@@ -216,34 +276,112 @@ pub fn default_headers(referer: Option<&str>) -> HeaderMap {
     headers
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ExtractedPrice {
+    pub text: Option<String>,
+    pub value: Option<u64>,
+    pub currency: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedProduct {
     pub price_text: Option<String>,
     pub price_value: Option<u64>,
+    pub currency: Option<String>,
     pub page_asin: Option<String>,
     pub unavailable: bool,
 }
 
-pub fn parse_product_page(html: &str, expected_asin: &str) -> ParsedProduct {
+pub fn is_jpy_currency(currency: Option<&str>) -> bool {
+    currency == Some(JPY_CURRENCY)
+}
+
+pub fn detect_currency_from_text(text: &str) -> Option<String> {
+    let upper = text.to_uppercase();
+    if text.contains('￥') {
+        return Some(JPY_CURRENCY.to_string());
+    }
+    if upper.contains("HK$") || upper.contains("HKD") {
+        return Some("HKD".to_string());
+    }
+    if upper.contains("USD") || text.contains('$') {
+        return Some("USD".to_string());
+    }
+    if text.contains('€') || upper.contains("EUR") {
+        return Some("EUR".to_string());
+    }
+    if text.contains('¥') {
+        return Some("OTHER".to_string());
+    }
+    None
+}
+
+pub fn detect_currency_from_symbol(symbol: &str) -> Option<String> {
+    let trimmed = symbol.trim();
+    if trimmed.contains('￥') {
+        return Some(JPY_CURRENCY.to_string());
+    }
+    if trimmed.contains("HK$") {
+        return Some("HKD".to_string());
+    }
+    if trimmed.contains('$') {
+        return Some("USD".to_string());
+    }
+    if trimmed.contains('€') {
+        return Some("EUR".to_string());
+    }
+    if trimmed.contains('¥') {
+        return Some("OTHER".to_string());
+    }
+    None
+}
+
+pub fn parse_search_page(html: &str, target_asin: &str) -> Option<ExtractedPrice> {
+    let document = Html::parse_document(html);
+    let card_sel = Selector::parse(r#"div[data-component-type="s-search-result"]"#).ok()?;
+    let offscreen_sel = Selector::parse("span.a-offscreen").ok()?;
+    let target = target_asin.to_uppercase();
+
+    for card in document.select(&card_sel) {
+        let card_asin = card.value().attr("data-asin")?;
+        if card_asin.to_uppercase() != target {
+            continue;
+        }
+        for el in card.select(&offscreen_sel) {
+            let text = el.text().collect::<String>().trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+            if let Some(currency) = detect_currency_from_text(&text) {
+                return Some(ExtractedPrice {
+                    text: Some(text.clone()),
+                    value: parse_price_value(&text),
+                    currency: Some(currency),
+                });
+            }
+        }
+    }
+    None
+}
+
+pub fn parse_product_page(html: &str, _expected_asin: &str) -> ParsedProduct {
     let unavailable = UNAVAILABLE_MARKERS.iter().any(|m| html.contains(m));
     let page_asin = extract_page_asin(html);
-    let (price_text, price_value) = extract_price(html);
-
-    let _mismatch = page_asin
-        .as_ref()
-        .map(|asin| !asin.eq_ignore_ascii_case(expected_asin))
-        .unwrap_or(false);
+    let extracted = extract_price(html);
 
     ParsedProduct {
-        price_text: price_text.clone(),
-        price_value,
+        price_text: extracted.text.clone(),
+        price_value: extracted.value,
+        currency: extracted.currency.clone(),
         page_asin,
-        unavailable: unavailable && price_text.is_none(),
+        unavailable: unavailable && extracted.text.is_none(),
     }
 }
 
 fn extract_page_asin(html: &str) -> Option<String> {
-    if let Ok(re) = Regex::new(r#"(?i)rel="canonical" href="https://www\.amazon\.co\.jp/(?:dp|gp/product)/([A-Z0-9]{10})""#) {
+    if let Ok(re) = Regex::new(
+        r#"(?i)rel="canonical" href="https://www\.amazon\.co\.jp/(?:dp|gp/product)/([A-Z0-9]{10})""#,
+    ) {
         if let Some(caps) = re.captures(html) {
             return caps.get(1).map(|m| m.as_str().to_uppercase());
         }
@@ -263,7 +401,7 @@ fn extract_page_asin(html: &str) -> Option<String> {
     None
 }
 
-fn extract_price(html: &str) -> (Option<String>, Option<u64>) {
+fn extract_price(html: &str) -> ExtractedPrice {
     if let Some(found) = extract_first_offscreen_price(html) {
         return found;
     }
@@ -278,32 +416,56 @@ fn extract_price(html: &str) -> (Option<String>, Option<u64>) {
     extract_whole_fraction_price(&document)
 }
 
-fn extract_first_offscreen_price(html: &str) -> Option<(Option<String>, Option<u64>)> {
+fn extract_first_offscreen_price(html: &str) -> Option<ExtractedPrice> {
     let document = Html::parse_document(html);
     let selector = Selector::parse("span.a-offscreen").ok()?;
     for el in document.select(&selector) {
         let text = el.text().collect::<String>().trim().to_string();
-        if !text.is_empty() && (text.contains('￥') || text.contains('¥')) {
-            return Some((Some(text.clone()), parse_yen_value(&text)));
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(currency) = detect_currency_from_text(&text) {
+            return Some(ExtractedPrice {
+                text: Some(text.clone()),
+                value: parse_price_value(&text),
+                currency: Some(currency),
+            });
         }
     }
     None
 }
 
-fn extract_price_in_element(document: &Html, element_id: &str) -> Option<(Option<String>, Option<u64>)> {
+fn extract_price_in_element(document: &Html, element_id: &str) -> Option<ExtractedPrice> {
     let selector = Selector::parse(&format!("#{element_id} span.a-offscreen")).ok()?;
     for el in document.select(&selector) {
         let text = el.text().collect::<String>().trim().to_string();
-        if !text.is_empty() && (text.contains('￥') || text.contains('¥')) {
-            return Some((Some(text.clone()), parse_yen_value(&text)));
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(currency) = detect_currency_from_text(&text) {
+            return Some(ExtractedPrice {
+                text: Some(text.clone()),
+                value: parse_price_value(&text),
+                currency: Some(currency),
+            });
         }
     }
     None
 }
 
-fn extract_whole_fraction_price(document: &Html) -> (Option<String>, Option<u64>) {
+fn extract_whole_fraction_price(document: &Html) -> ExtractedPrice {
     let whole_sel = Selector::parse("span.a-price-whole").ok();
     let frac_sel = Selector::parse("span.a-price-fraction").ok();
+    let symbol_sel = Selector::parse("span.a-price-symbol").ok();
+
+    let symbol_text = symbol_sel
+        .as_ref()
+        .and_then(|sel| document.select(sel).next())
+        .map(|el| el.text().collect::<String>());
+
+    let currency = symbol_text
+        .as_deref()
+        .and_then(detect_currency_from_symbol);
 
     if let (Some(whole_sel), Some(frac_sel)) = (whole_sel, frac_sel) {
         if let (Some(whole), frac) = (
@@ -313,24 +475,42 @@ fn extract_whole_fraction_price(document: &Html) -> (Option<String>, Option<u64>
             let whole_text = whole.text().collect::<String>().replace(',', "");
             let frac_text = frac.map(|f| f.text().collect::<String>()).unwrap_or_default();
             if !whole_text.trim().is_empty() {
-                let text = format!("￥{whole_text}{frac_text}");
-                return (Some(text.clone()), parse_yen_value(&text));
+                let prefix = symbol_text
+                    .as_deref()
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| "￥".to_string());
+                let text = format!("{prefix}{whole_text}{frac_text}");
+                return ExtractedPrice {
+                    text: Some(text.clone()),
+                    value: parse_price_value(&text),
+                    currency,
+                };
             }
         }
     }
 
-    (None, None)
+    ExtractedPrice::default()
 }
 
-pub fn parse_yen_value(text: &str) -> Option<u64> {
-    let digits: String = text
-        .chars()
-        .filter(|c| c.is_ascii_digit())
-        .collect();
+pub fn parse_price_value(text: &str) -> Option<u64> {
+    let digits: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
         None
     } else {
         digits.parse().ok()
+    }
+}
+
+pub fn parse_yen_value(text: &str) -> Option<u64> {
+    parse_price_value(text)
+}
+
+pub fn batch_plan(scrapeable_count: usize) -> (bool, usize) {
+    if scrapeable_count > config::BATCH_SIZE {
+        let batch_total = scrapeable_count.div_ceil(config::BATCH_SIZE);
+        (true, batch_total)
+    } else {
+        (false, 1)
     }
 }
 
@@ -359,5 +539,84 @@ mod tests {
     fn extracts_token() {
         let html = r#"<input id="glowValidationToken" value="abc123" />"#;
         assert_eq!(extract_glow_token(html), Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn detects_jpy_from_fullwidth_yen() {
+        assert_eq!(
+            detect_currency_from_text("￥5,287"),
+            Some("JPY".to_string())
+        );
+        assert!(is_jpy_currency(detect_currency_from_text("￥5,287").as_deref()));
+    }
+
+    #[test]
+    fn detects_usd_and_hkd() {
+        assert_eq!(
+            detect_currency_from_text("USD 36.20"),
+            Some("USD".to_string())
+        );
+        assert_eq!(
+            detect_currency_from_text("HK$123"),
+            Some("HKD".to_string())
+        );
+        assert!(!is_jpy_currency(Some("USD")));
+    }
+
+    #[test]
+    fn detects_halfwidth_yen_as_non_jpy() {
+        assert_eq!(
+            detect_currency_from_text("¥123"),
+            Some("OTHER".to_string())
+        );
+        assert!(!is_jpy_currency(Some("OTHER")));
+    }
+
+    #[test]
+    fn parse_search_page_matches_target_asin_only() {
+        let html = r#"
+        <div data-component-type="s-search-result" data-asin="B0OTHER123">
+          <span class="a-offscreen">USD 99.99</span>
+        </div>
+        <div data-component-type="s-search-result" data-asin="B08CKGRHLF">
+          <span class="a-offscreen">￥5,287</span>
+        </div>
+        "#;
+        let parsed = parse_search_page(html, "b08ckgrhlf").expect("should match");
+        assert_eq!(parsed.currency.as_deref(), Some("JPY"));
+        assert_eq!(parsed.value, Some(5287));
+    }
+
+    #[test]
+    fn parse_search_page_no_match_returns_none() {
+        let html = r#"
+        <div data-component-type="s-search-result" data-asin="B0OTHER123">
+          <span class="a-offscreen">￥1,000</span>
+        </div>
+        "#;
+        assert!(parse_search_page(html, "B08CKGRHLF").is_none());
+    }
+
+    #[test]
+    fn whole_fraction_uses_real_symbol_not_assumed_jpy() {
+        let html = r#"
+        <span class="a-price-symbol">$</span>
+        <span class="a-price-whole">36</span>
+        <span class="a-price-fraction">20</span>
+        "#;
+        let document = Html::parse_document(html);
+        let extracted = extract_whole_fraction_price(&document);
+        assert_eq!(extracted.currency.as_deref(), Some("USD"));
+        assert!(!is_jpy_currency(extracted.currency.as_deref()));
+    }
+
+    #[test]
+    fn batch_plan_splits_over_100() {
+        let (enabled, total) = batch_plan(250);
+        assert!(enabled);
+        assert_eq!(total, 3);
+        let (enabled, total) = batch_plan(100);
+        assert!(!enabled);
+        assert_eq!(total, 1);
     }
 }

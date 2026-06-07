@@ -7,6 +7,8 @@ pub const RETRY_DELAYS_MS: [u64; 3] = [800, 1600, 3200];
 pub const SESSION_CONNECT_TIMEOUT_SECS: u64 = 20;
 pub const SESSION_REQUEST_TIMEOUT_SECS: u64 = 60;
 pub const SESSION_INIT_RETRIES: u32 = 3;
+pub const BATCH_SIZE: usize = 100;
+pub const BATCH_COOLDOWN_SECS: u64 = 30;
 pub const SELF_CHECK_ASIN: &str = "B0DFXQWPPS";
 
 pub const USER_AGENTS: &[&str] = &[
@@ -29,7 +31,11 @@ pub const CORE_PRICE_IDS: &[&str] = &[
 ];
 
 pub fn product_url(asin: &str) -> String {
-    format!("{AMAZON_BASE}/dp/{asin}?th=1")
+    format!("{AMAZON_BASE}/dp/{asin}?th=1&psc=1")
+}
+
+pub fn search_url(asin: &str) -> String {
+    format!("{AMAZON_BASE}/s?k={asin}")
 }
 
 pub fn friendly_network_error(err: impl std::fmt::Display) -> String {

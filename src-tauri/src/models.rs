@@ -60,12 +60,26 @@ impl Default for ScrapeOptions {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ScrapePhase {
+    Scraping,
+    Cooling,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScrapeProgress {
     pub done: usize,
     pub total: usize,
     pub row: RowResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<ScrapePhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_total: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_secs: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +97,8 @@ pub struct SelfCheckResult {
     pub ok: bool,
     pub asin: String,
     pub price_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
     pub message: String,
 }
 
