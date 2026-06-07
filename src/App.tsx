@@ -1,6 +1,7 @@
 import {
   CloudDownloadOutlined,
   CloudSyncOutlined,
+  CopyOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   StopOutlined,
@@ -20,6 +21,7 @@ import {
   Statistic,
   Table,
   Tag,
+  Tooltip,
   Typography,
   Upload,
   message,
@@ -47,7 +49,6 @@ const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
 const DEFAULT_OPTIONS: ScrapeOptions = {
-  zipCode: "150-0001",
   ratePerSec: 3,
   concurrency: 3,
 };
@@ -68,10 +69,10 @@ function App() {
 
     const bootstrap = async () => {
       try {
-        const session = await initSession(options.zipCode);
+        const session = await initSession();
         setSessionMessage(session.message);
-        const check = await runSelfCheck(options.zipCode);
-        setSelfCheckMessage(check.message);
+        const check = await runSelfCheck();
+        setSelfCheckMessage(check.ok ? "自检通过" : check.message);
       } catch (error) {
         setSessionMessage(`会话初始化失败: ${String(error)}`);
       }
@@ -142,7 +143,7 @@ function App() {
     setRunning(true);
     setProgress({ done: 0, total: rows.length });
     try {
-      const session = await initSession(options.zipCode);
+      const session = await initSession();
       setSessionMessage(session.message);
       const result = await startScrape(rows, options);
       setRows(result);
@@ -186,6 +187,23 @@ function App() {
     message.success("CSV 已导出");
   };
 
+  const copyPriceValue = async (record: RowResult) => {
+    const value =
+      record.priceValue?.toString() ??
+      record.priceText?.replace(/[^\d]/g, "") ??
+      "";
+    if (!value) {
+      message.warning("暂无可复制的价格");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      message.success(`已复制 ${value}`);
+    } catch {
+      message.error("复制失败");
+    }
+  };
+
   const columns: ColumnsType<RowResult> = [
     { title: "SKU", dataIndex: "sku", key: "sku", width: 180, ellipsis: true },
     { title: "dp code", dataIndex: "dpCode", key: "dpCode", width: 120 },
@@ -194,8 +212,26 @@ function App() {
       title: "价格 (JPY)",
       dataIndex: "priceText",
       key: "priceText",
-      width: 120,
-      render: (value) => value ?? "-",
+      width: 140,
+      render: (value, record) => {
+        if (!value) {
+          return "-";
+        }
+        return (
+          <Space size={4}>
+            <span>{value}</span>
+            <Tooltip title="复制数值">
+              <Button
+                type="text"
+                size="small"
+                icon={<CopyOutlined />}
+                className="copy-price-btn"
+                onClick={() => void copyPriceValue(record)}
+              />
+            </Tooltip>
+          </Space>
+        );
+      },
     },
     {
       title: "Amazon 链接",
@@ -270,10 +306,14 @@ function App() {
       <Content className="app-content">
         <Space direction="vertical" size="large" style={{ width: "100%" }}>
           <Alert
+            className="session-alert"
             type={selfCheckMessage?.includes("通过") ? "success" : "info"}
             showIcon
-            message={sessionMessage}
-            description={selfCheckMessage ?? "启动时会自动设置日本地区并执行链路自检"}
+            message={
+              selfCheckMessage
+                ? `${sessionMessage} · ${selfCheckMessage}`
+                : sessionMessage
+            }
           />
 
           <Row gutter={[16, 16]}>
@@ -290,8 +330,17 @@ function App() {
                     <Upload beforeUpload={handleUpload} showUploadList={false} accept=".txt">
                       <Button icon={<UploadOutlined />}>上传 txt</Button>
                     </Upload>
-                    <Button onClick={() => void handleParse()}>解析 SKU</Button>
+                    <Button
+                      type="primary"
+                      className="parse-sku-btn"
+                      onClick={() => void handleParse()}
+                    >
+                      解析 SKU
+                    </Button>
                   </Space>
+                  <Text type="secondary">
+                    上传 txt 会自动解析；手动粘贴后请点击「解析 SKU」
+                  </Text>
                   <Text type="secondary">
                     已识别 {rows.length} 条，有效 {validCount} 条
                     {duplicateCount > 0 ? `，去重 ${duplicateCount} 条` : ""}
@@ -303,17 +352,7 @@ function App() {
             <Col xs={24} xl={14}>
               <Card title="抓取控制" className="panel-card">
                 <Row gutter={[16, 16]}>
-                  <Col xs={24} md={8}>
-                    <Text>配送邮编</Text>
-                    <Input
-                      value={options.zipCode}
-                      onChange={(e) =>
-                        setOptions((current) => ({ ...current, zipCode: e.target.value }))
-                      }
-                      placeholder="150-0001"
-                    />
-                  </Col>
-                  <Col xs={12} md={8}>
+                  <Col xs={12} md={12}>
                     <Text>速率 (条/秒)</Text>
                     <InputNumber
                       min={1}
@@ -328,7 +367,7 @@ function App() {
                       }
                     />
                   </Col>
-                  <Col xs={12} md={8}>
+                  <Col xs={12} md={12}>
                     <Text>并发数</Text>
                     <InputNumber
                       min={1}

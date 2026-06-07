@@ -43,7 +43,7 @@ impl RowStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct ScrapeOptions {
     pub zip_code: String,
     pub rate_per_sec: u32,

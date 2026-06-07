@@ -41,6 +41,40 @@ body {
   box-shadow: 0 8px 24px rgba(15, 61, 122, 0.08);
 }
 
+.parse-sku-btn {
+  background: #fa8c16 !important;
+  border-color: #fa8c16 !important;
+  box-shadow: 0 2px 8px rgba(250, 140, 22, 0.35);
+}
+
+.parse-sku-btn:hover {
+  background: #ffa940 !important;
+  border-color: #ffa940 !important;
+}
+
+.session-alert {
+  padding: 6px 12px;
+}
+
+.session-alert .ant-alert-message {
+  font-size: 13px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.session-alert .ant-alert-icon {
+  font-size: 14px;
+  margin-top: 2px;
+}
+
+.copy-price-btn {
+  color: #8c8c8c;
+}
+
+.copy-price-btn:hover {
+  color: #1677ff !important;
+}
+
 .ant-table-wrapper {
   overflow: auto;
 }

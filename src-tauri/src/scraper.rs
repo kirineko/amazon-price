@@ -172,7 +172,7 @@ pub async fn self_check(session: &mut AmazonSession) -> Result<(bool, Option<Str
         .await?;
     let parsed = parse_product_page(&html, config::SELF_CHECK_ASIN);
     if let Some(price) = parsed.price_text {
-        Ok((true, Some(price.clone()), format!("自检通过，{price}")))
+        Ok((true, Some(price.clone()), "自检通过".to_string()))
     } else {
         Ok((false, None, "自检失败：未能获取测试商品价格".to_string()))
     }

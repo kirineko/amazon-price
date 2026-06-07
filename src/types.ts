@@ -21,7 +21,6 @@ export interface RowResult {
 }
 
 export interface ScrapeOptions {
-  zipCode: string;
   ratePerSec: number;
   concurrency: number;
 }
