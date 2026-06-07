@@ -1,13 +1,14 @@
-# 阶段 1：仅 HTTP（用于首次部署 + certbot 申请证书）
+# 宿主机 nginx 配置（a.kirineko.tech）
 #
 # 用法：
-#   sudo cp deploy/nginx.host.http.conf.example /etc/nginx/sites-available/amazon-price
+#   sudo cp deploy/nginx.host.conf.example /etc/nginx/sites-available/amazon-price
 #   sudo ln -sf /etc/nginx/sites-available/amazon-price /etc/nginx/sites-enabled/
-#   sudo mkdir -p /var/www/certbot
 #   sudo nginx -t && sudo systemctl reload nginx
 #
-# 此阶段不要跳转到 HTTPS，否则 certbot 无法完成 HTTP-01 验证。
-# 证书申请成功后，换用 nginx.host.https.conf.example（见 DEPLOY.md）。
+# 申请 HTTPS（certbot 会自动修改本文件，写入 443 与证书，无需手动指定路径）：
+#   sudo certbot --nginx -d a.kirineko.tech
+#
+# 注意：certbot 修改后的 /etc/nginx/sites-available/amazon-price 不要用仓库 example 覆盖。
 
 upstream amazon_price_app {
     server 127.0.0.1:9080;
@@ -19,11 +20,6 @@ server {
     server_name a.kirineko.tech;
 
     client_max_body_size 10m;
-
-    # certbot webroot 验证路径
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
 
     location /api/events {
         proxy_pass http://amazon_price_app;

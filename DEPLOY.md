@@ -1,8 +1,6 @@
 # Web 部署指南（a.kirineko.tech）
 
-架构：**宿主机 nginx（TLS 终止）→ 127.0.0.1:9080 → docker compose app**
-
-nginx 分两阶段配置：先 HTTP 跑通并申请 certbot 证书，再切换 HTTPS。
+架构：**宿主机 nginx（TLS 由 certbot 配置）→ 127.0.0.1:9080 → docker compose app**
 
 ---
 
@@ -21,12 +19,12 @@ cargo run --example hash_password -- '你的强密码'
 
 编辑 `.env`：
 
-| 变量 | 首次部署 | 证书就绪后 |
+| 变量 | 首次部署（HTTP） | certbot 完成后 |
 |---|---|---|
-| `PORT` | `9080`（或未被占用的端口） | 不变 |
+| `PORT` | `9080` | 不变 |
 | `APP_PASSWORD_HASH` | 必填 | 不变 |
 | `STATIC_DIR` | `/app/dist` | 不变 |
-| `SECURE_COOKIES` | **`false`**（HTTP 阶段） | **`true`** |
+| `SECURE_COOKIES` | **`false`** | **`true`** |
 | `DEFAULT_ZIP` | `150-0001` | 不变 |
 
 > HTTP 阶段若 `SECURE_COOKIES=true`，浏览器不会保存登录 Cookie。
@@ -45,18 +43,15 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:9080/
 
 ---
 
-## 3. 阶段一：配置 HTTP nginx
+## 3. 配置 nginx（HTTP）
 
 ```bash
-sudo cp deploy/nginx.host.http.conf.example /etc/nginx/sites-available/amazon-price
+sudo cp deploy/nginx.host.conf.example /etc/nginx/sites-available/amazon-price
 sudo ln -sf /etc/nginx/sites-available/amazon-price /etc/nginx/sites-enabled/
-sudo mkdir -p /var/www/certbot
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
 确认 upstream 端口与 `.env` 中 `PORT` 一致（默认 `9080`）。
-
-验证 HTTP 可访问：
 
 ```bash
 curl -I http://a.kirineko.tech/
@@ -64,58 +59,50 @@ curl -I http://a.kirineko.tech/
 
 ---
 
-## 4. 使用 certbot 申请证书
+## 4. certbot 申请证书并启用 HTTPS
 
-**推荐 webroot 方式**（不自动改 nginx 配置）：
+使用 nginx 插件，**证书路径由 certbot 自动写入 nginx 配置**，无需手动指定：
 
 ```bash
-sudo certbot certonly --webroot \
-  -w /var/www/certbot \
-  -d a.kirineko.tech
+sudo certbot --nginx -d a.kirineko.tech
 ```
 
-按提示填写邮箱并同意条款。成功后证书位于：
+按提示选择是否将 HTTP 重定向到 HTTPS（建议选 **Redirect**）。
 
-```
-/etc/letsencrypt/live/a.kirineko.tech/fullchain.pem
-/etc/letsencrypt/live/a.kirineko.tech/privkey.pem
+certbot 会直接修改 `/etc/nginx/sites-available/amazon-price`，添加 `listen 443 ssl` 及默认 Let's Encrypt 证书引用。
+
+完成后：
+
+```bash
+# .env 设置 SECURE_COOKIES=true
+docker compose up -d
+
+curl -I https://a.kirineko.tech/
 ```
 
-续期（certbot 定时任务通常已配置，可手动测试）：
+续期测试：
 
 ```bash
 sudo certbot renew --dry-run
 ```
 
+> **注意**：服务器上的 nginx 配置已被 certbot 改过，后续 `git pull` 后不要用仓库里的 example 覆盖它。若需调整反代规则，请直接编辑服务器上的文件，或改 example 后手动 merge 到现有配置。
+
 ---
 
-## 5. 阶段二：切换 HTTPS nginx
+## 5. 验收
 
 ```bash
-sudo cp deploy/nginx.host.https.conf.example /etc/nginx/sites-available/amazon-price
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-更新 `.env` 并重启 app：
-
-```bash
-# .env 中设置 SECURE_COOKIES=true
-docker compose up -d
-```
-
-验证：
-
-```bash
-curl -I http://a.kirineko.tech/          # 应 301 到 https
-curl -I https://a.kirineko.tech/       # 应 200
-
-# API 未登录应 401
 curl -s -o /dev/null -w "%{http_code}\n" \
   https://a.kirineko.tech/api/session \
   -X POST -H 'Content-Type: application/json' -d '{}'
+# 应 401
+
+curl -s -c /tmp/cookies.txt -X POST https://a.kirineko.tech/api/login \
+  -H 'Content-Type: application/json' -d '{"password":"你的密码"}'
 ```
 
-浏览器访问 `https://a.kirineko.tech/` 登录测试。
+浏览器访问 `https://a.kirineko.tech/` 登录并测试抓取。
 
 ---
 
@@ -125,8 +112,9 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 git pull
 docker compose build
 docker compose up -d
-# nginx 配置无变更则无需 reload
 ```
+
+nginx 配置若已被 certbot 管理，一般无需重新 copy example。
 
 ---
 
@@ -150,9 +138,8 @@ npm run dev:web   # http://localhost:1420
 
 ---
 
-## 配置文件说明
+## 配置文件
 
 | 文件 | 用途 |
 |---|---|
-| `deploy/nginx.host.http.conf.example` | 阶段 1：仅 HTTP，供 certbot 验证 |
-| `deploy/nginx.host.https.conf.example` | 阶段 2：HTTP→HTTPS 跳转 + TLS 反代 |
+| `deploy/nginx.host.conf.example` | 初始 HTTP 反代；certbot `--nginx` 会在此基础上自动加 HTTPS |
