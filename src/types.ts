@@ -20,8 +20,17 @@ export interface RowResult {
   fetchedAt?: string | null;
 }
 
+export type ProxyMode = "auto" | "manual" | "off";
+
+export interface ProxyConfig {
+  mode: ProxyMode;
+  url?: string | null;
+  username?: string | null;
+  password?: string | null;
+}
+
 export interface ScrapeOptions {
-  ratePerSec: number;
+  requestIntervalMs: number;
   concurrency: number;
 }
 
@@ -35,6 +44,13 @@ export interface ScrapeProgress {
   batchIndex?: number | null;
   batchTotal?: number | null;
   cooldownSecs?: number | null;
+}
+
+export interface ParseSkusResult {
+  rows: RowResult[];
+  duplicateCount: number;
+  invalidCount: number;
+  validCount: number;
 }
 
 export interface SessionStatus {

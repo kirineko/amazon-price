@@ -5,7 +5,10 @@
 ## 功能
 
 - 支持多行文本输入或上传 `.txt` 文件
-- SKU 解析规则：`gx-b0dfxqwpps149` → dp code `b0dfxqwpps` → ASIN `B0DFXQWPPS`
+- SKU 解析规则（`gx-` 前缀可选，3 位数字后缀可选，按长度判定）：
+  - `gx-b0dfxqwpps149` → ASIN `B0DFXQWPPS`（13 位，去末 3 位）
+  - `b0dfxqwpps` → ASIN `B0DFXQWPPS`（10 位裸 ASIN）
+  - `B08CKGRHLF` → ASIN `B08CKGRHLF`（无前缀、无后缀）
 - 自动初始化日本地区会话（默认邮编 `150-0001`，可配置）
 - 搜索页优先取价，商品页 `?th=1&psc=1` 兜底；大批量（>100 条）自动分批冷却
 - 频率控制：默认最多 3 条/秒，支持并发

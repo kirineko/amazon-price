@@ -1,4 +1,4 @@
-use crate::models::{RowResult, ScrapeOptions, SelfCheckResult, SessionStatus};
+use crate::models::{ParseSkusResult, ProxyConfig, RowResult, ScrapeOptions, SelfCheckResult, SessionStatus};
 use crate::scraper::ProgressCallback;
 use crate::service;
 use crate::state::AppState;
@@ -14,12 +14,12 @@ pub async fn init_session(
 }
 
 #[tauri::command]
-pub fn parse_skus(text: String) -> Result<(Vec<RowResult>, usize), String> {
+pub fn parse_skus(text: String) -> Result<ParseSkusResult, String> {
     Ok(service::parse_skus(&text))
 }
 
 #[tauri::command]
-pub fn parse_skus_file(path: String) -> Result<(Vec<RowResult>, usize), String> {
+pub fn parse_skus_file(path: String) -> Result<ParseSkusResult, String> {
     crate::sku::parse_skus_from_file(&path).map_err(|e| e.to_string())
 }
 
@@ -71,6 +71,24 @@ pub async fn run_self_check(
     zip_code: Option<String>,
 ) -> Result<SelfCheckResult, String> {
     service::run_self_check(&state, zip_code).await
+}
+
+#[tauri::command]
+pub fn get_proxy(state: State<'_, AppState>) -> Result<ProxyConfig, String> {
+    Ok(service::get_proxy(&state))
+}
+
+#[tauri::command]
+pub fn set_proxy(state: State<'_, AppState>, config: ProxyConfig) -> Result<ProxyConfig, String> {
+    service::set_proxy(&state, config)
+}
+
+#[tauri::command]
+pub async fn test_proxy(
+    config: ProxyConfig,
+    zip_code: Option<String>,
+) -> Result<SelfCheckResult, String> {
+    service::test_proxy(&config, zip_code).await
 }
 
 fn tauri_progress_callback(app: AppHandle) -> ProgressCallback {

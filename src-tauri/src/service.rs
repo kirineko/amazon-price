@@ -1,15 +1,45 @@
-use crate::models::{RowResult, ScrapeOptions, SelfCheckResult, SessionStatus};
+use crate::models::{ParseSkusResult, ProxyConfig, RowResult, ScrapeOptions, SelfCheckResult, SessionStatus};
+use crate::proxy;
 use crate::region::AmazonSession;
 use crate::scraper::{self_check, ProgressCallback, ScrapeEngine};
 use crate::state::AppState;
 use crate::sku;
 use std::sync::atomic::Ordering;
 
+pub fn get_proxy(state: &AppState) -> ProxyConfig {
+    state.proxy_config()
+}
+
+pub fn set_proxy(state: &AppState, config: ProxyConfig) -> Result<ProxyConfig, String> {
+    if let Some(dir) = state.config_dir() {
+        proxy::save_proxy_to_dir(&dir, &config)?;
+    }
+    state.set_proxy_config(config.clone());
+    state.clear_session();
+    Ok(config)
+}
+
+pub async fn test_proxy(config: &ProxyConfig, zip_code: Option<String>) -> Result<SelfCheckResult, String> {
+    let zip = zip_code.unwrap_or_else(|| crate::config::DEFAULT_ZIP.to_string());
+    let mut session = AmazonSession::new(&zip, config).map_err(|e| e.to_string())?;
+    let (ok, price_text, currency, message) = self_check(&mut session)
+        .await
+        .map_err(|e| crate::config::friendly_network_error(e))?;
+    Ok(SelfCheckResult {
+        ok,
+        asin: crate::config::SELF_CHECK_ASIN.to_string(),
+        price_text,
+        currency,
+        message,
+    })
+}
+
 pub async fn init_session(
     state: &AppState,
     zip_code: Option<String>,
 ) -> Result<SessionStatus, String> {
     let zip = zip_code.unwrap_or_else(|| crate::config::DEFAULT_ZIP.to_string());
+    let proxy = state.proxy_config();
 
     if let Some(existing) = state.session.lock().clone() {
         if existing.delivery_location.is_some() {
@@ -20,13 +50,13 @@ pub async fn init_session(
                 message: existing
                     .delivery_location
                     .clone()
-                    .map(|d| format!("会话已就绪，配送地：{d}"))
+                    .map(|d| format!("会话已就绪 · 日语 (JPY) · 配送地：{d}"))
                     .unwrap_or_else(|| "会话已就绪".to_string()),
             });
         }
     }
 
-    let mut session = AmazonSession::new(&zip).map_err(|e| e.to_string())?;
+    let mut session = AmazonSession::new(&zip, &proxy).map_err(|e| e.to_string())?;
     session
         .init_with_retry()
         .await
@@ -38,12 +68,13 @@ pub async fn init_session(
         zip_code: zip,
         delivery_location: delivery.clone(),
         message: delivery
-            .map(|d| format!("会话已初始化，配送地：{d}"))
-            .unwrap_or_else(|| "会话已初始化".to_string()),
+            .clone()
+            .map(|d| format!("已设置日语 (JPY) 与日本配送：{d}"))
+            .unwrap_or_else(|| "已设置日语 (JPY) 与日本配送".to_string()),
     })
 }
 
-pub fn parse_skus(text: &str) -> (Vec<RowResult>, usize) {
+pub fn parse_skus(text: &str) -> ParseSkusResult {
     sku::parse_skus_from_text(text)
 }
 
@@ -54,6 +85,7 @@ pub async fn start_scrape(
     on_progress: Option<ProgressCallback>,
 ) -> Result<Vec<RowResult>, String> {
     let opts = options.unwrap_or_default();
+    let proxy = state.proxy_config();
     state.cancel_flag.store(false, Ordering::SeqCst);
 
     let mut session = {
@@ -61,14 +93,14 @@ pub async fn start_scrape(
         if let Some(existing) = guard.as_ref() {
             existing.clone()
         } else {
-            AmazonSession::new(&opts.zip_code).map_err(|e| e.to_string())?
+            AmazonSession::new(&opts.zip_code, &proxy).map_err(|e| e.to_string())?
         }
     };
 
     let results = ScrapeEngine::scrape_rows(
         &mut session,
         rows,
-        opts.rate_per_sec,
+        opts.request_interval_ms,
         opts.concurrency,
         std::sync::Arc::clone(&state.cancel_flag),
         on_progress,
@@ -89,6 +121,7 @@ pub async fn refresh_one(
     on_progress: Option<ProgressCallback>,
 ) -> Result<RowResult, String> {
     let opts = options.unwrap_or_default();
+    let proxy = state.proxy_config();
     state.cancel_flag.store(false, Ordering::SeqCst);
 
     let mut session = {
@@ -96,14 +129,14 @@ pub async fn refresh_one(
         if let Some(existing) = guard.as_ref() {
             existing.clone()
         } else {
-            AmazonSession::new(&opts.zip_code).map_err(|e| e.to_string())?
+            AmazonSession::new(&opts.zip_code, &proxy).map_err(|e| e.to_string())?
         }
     };
 
     let results = ScrapeEngine::scrape_rows(
         &mut session,
         vec![row],
-        opts.rate_per_sec,
+        opts.request_interval_ms,
         1,
         std::sync::Arc::clone(&state.cancel_flag),
         on_progress,
@@ -170,7 +203,8 @@ pub async fn run_self_check(
     zip_code: Option<String>,
 ) -> Result<SelfCheckResult, String> {
     let zip = zip_code.unwrap_or_else(|| crate::config::DEFAULT_ZIP.to_string());
-    let mut session = AmazonSession::new(&zip).map_err(|e| e.to_string())?;
+    let proxy = state.proxy_config();
+    let mut session = AmazonSession::new(&zip, &proxy).map_err(|e| e.to_string())?;
     let (ok, price_text, currency, message) = self_check(&mut session)
         .await
         .map_err(|e| crate::config::friendly_network_error(e))?;

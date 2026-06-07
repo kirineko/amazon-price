@@ -1,5 +1,5 @@
 use crate::config;
-use crate::models::{RowResult, RowStatus};
+use crate::models::{ParseSkusResult, RowResult, RowStatus};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -26,23 +26,45 @@ pub fn parse_dp_code(raw: &str) -> Result<(String, String), SkuError> {
         return Err(SkuError::Empty);
     }
 
-    let mut body = trimmed.to_string();
-    if body.len() >= 3 && body[..3].eq_ignore_ascii_case("gx-") {
-        body = body[3..].to_string();
-    }
-
-    if body.len() == 13 && body[10..].chars().all(|c| c.is_ascii_digit()) {
-        body = body[..10].to_string();
-    }
-
-    let dp_code = body;
+    let body = strip_gx_prefix(trimmed);
+    let dp_code = derive_dp_code(&body);
     let asin = dp_code.to_uppercase();
 
     if !is_valid_asin(&asin) {
-        return Err(SkuError::InvalidFormat(asin));
+        return Err(SkuError::InvalidFormat(trimmed.to_string()));
     }
 
     Ok((dp_code, asin))
+}
+
+fn strip_gx_prefix(raw: &str) -> String {
+    let mut body = raw.to_string();
+    if body.len() >= 3 && body[..3].eq_ignore_ascii_case("gx-") {
+        body = body[3..].to_string();
+    }
+    body
+}
+
+fn derive_dp_code(body: &str) -> String {
+    if body.len() == 13 && body[10..].chars().all(|c| c.is_ascii_digit()) {
+        body[..10].to_string()
+    } else {
+        body.to_string()
+    }
+}
+
+pub fn sku_format_error_message(raw: &str) -> String {
+    let body = strip_gx_prefix(raw.trim());
+    let len = body.chars().count();
+    if len == 10 {
+        "应为 10 位 ASIN（仅含字母数字）".to_string()
+    } else if len == 13 && body.chars().skip(10).all(|c| c.is_ascii_digit()) {
+        "13 位格式中前 10 位须为有效 ASIN（仅含字母数字）".to_string()
+    } else {
+        format!(
+            "去掉可选 gx- 后为 {len} 位，应为 10 位 ASIN，或 13 位且末 3 位为数字后缀"
+        )
+    }
 }
 
 pub fn is_valid_asin(asin: &str) -> bool {
@@ -55,7 +77,7 @@ pub fn parse_sku_line(line: &str) -> Result<ParsedSku, SkuError> {
     Ok(ParsedSku { sku, dp_code, asin })
 }
 
-pub fn parse_skus_from_text(text: &str) -> (Vec<RowResult>, usize) {
+pub fn parse_skus_from_text(text: &str) -> ParseSkusResult {
     let mut seen = HashSet::new();
     let mut rows = Vec::new();
     let mut duplicate_count = 0;
@@ -77,7 +99,7 @@ pub fn parse_skus_from_text(text: &str) -> (Vec<RowResult>, usize) {
                     sku: parsed.sku,
                     dp_code: parsed.dp_code,
                     asin: parsed.asin.clone(),
-                    amazon_url: config::product_url(&parsed.asin),
+                    amazon_url: config::search_url(&parsed.asin),
                     price_text: None,
                     price_value: None,
                     currency: "JPY".to_string(),
@@ -87,22 +109,33 @@ pub fn parse_skus_from_text(text: &str) -> (Vec<RowResult>, usize) {
                 });
             }
             Err(SkuError::Empty) => {}
-            Err(SkuError::InvalidFormat(value)) => {
+            Err(SkuError::InvalidFormat(raw)) => {
                 rows.push(crate::models::empty_row(
                     trimmed.to_string(),
-                    value.clone(),
-                    value,
+                    raw.clone(),
+                    raw.to_uppercase(),
                     RowStatus::FormatError,
-                    Some("SKU 格式无效，ASIN 需为 10 位字母数字".to_string()),
+                    Some(sku_format_error_message(trimmed)),
                 ));
             }
         }
     }
 
-    (rows, duplicate_count)
+    let invalid_count = rows
+        .iter()
+        .filter(|row| row.status == RowStatus::FormatError)
+        .count();
+    let valid_count = rows.len() - invalid_count;
+
+    ParseSkusResult {
+        rows,
+        duplicate_count,
+        invalid_count,
+        valid_count,
+    }
 }
 
-pub fn parse_skus_from_file(path: &str) -> anyhow::Result<(Vec<RowResult>, usize)> {
+pub fn parse_skus_from_file(path: &str) -> anyhow::Result<ParseSkusResult> {
     let content = fs::read_to_string(Path::new(path))?;
     Ok(parse_skus_from_text(&content))
 }
@@ -111,6 +144,16 @@ pub fn parse_skus_from_file(path: &str) -> anyhow::Result<(Vec<RowResult>, usize
 mod tests {
     use super::*;
     use crate::models::RowStatus;
+
+    #[test]
+    fn parsed_row_uses_search_page_url() {
+        let result = parse_skus_from_text("gx-b01buq774e155\n");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].amazon_url,
+            "https://www.amazon.co.jp/s?k=b01buq774e"
+        );
+    }
 
     #[test]
     fn parses_normal_sku() {
@@ -123,6 +166,27 @@ mod tests {
     fn parses_without_prefix() {
         let parsed = parse_sku_line("b0dfxqwpps149").unwrap();
         assert_eq!(parsed.asin, "B0DFXQWPPS");
+    }
+
+    #[test]
+    fn parses_gx_prefix_optional_with_and_without_suffix() {
+        assert_eq!(
+            parse_sku_line("gx-b08ckgrhlf").unwrap().asin,
+            "B08CKGRHLF"
+        );
+        assert_eq!(
+            parse_sku_line("b08ckgrhlf149").unwrap().asin,
+            "B08CKGRHLF"
+        );
+        assert_eq!(parse_sku_line("B08CKGRHLF").unwrap().asin, "B08CKGRHLF");
+    }
+
+    #[test]
+    fn format_error_explains_length_rules() {
+        let msg = sku_format_error_message("gx-ab");
+        assert!(msg.contains("10 位"));
+        let msg = sku_format_error_message("b0dfxqwpps1");
+        assert!(msg.contains("11 位"));
     }
 
     #[test]
@@ -165,20 +229,24 @@ mod tests {
     #[test]
     fn deduplicates_bare_asin_with_suffixed_sku() {
         let text = "gx-b0dfxqwpps149\nb0dfxqwpps\n";
-        let (rows, dup) = parse_skus_from_text(text);
-        assert_eq!(dup, 1);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].asin, "B0DFXQWPPS");
+        let result = parse_skus_from_text(text);
+        assert_eq!(result.duplicate_count, 1);
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].asin, "B0DFXQWPPS");
+        assert_eq!(result.valid_count, 1);
+        assert_eq!(result.invalid_count, 0);
     }
 
     #[test]
     fn deduplicates_and_marks_invalid() {
         let text = "gx-b0dfxqwpps149\ngx-b0dfxqwpps149\nbad\n";
-        let (rows, dup) = parse_skus_from_text(text);
-        assert_eq!(dup, 1);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].asin, "B0DFXQWPPS");
-        assert_eq!(rows[1].status, RowStatus::FormatError);
+        let result = parse_skus_from_text(text);
+        assert_eq!(result.duplicate_count, 1);
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0].asin, "B0DFXQWPPS");
+        assert_eq!(result.rows[1].status, RowStatus::FormatError);
+        assert_eq!(result.valid_count, 1);
+        assert_eq!(result.invalid_count, 1);
     }
 
     #[test]
@@ -191,8 +259,9 @@ mod tests {
         if content.is_empty() {
             return;
         }
-        let (rows, _) = parse_skus_from_text(&content);
-        assert_eq!(rows.len(), 6);
-        assert!(rows.iter().all(|r| r.status == RowStatus::Pending));
+        let result = parse_skus_from_text(&content);
+        assert_eq!(result.rows.len(), 6);
+        assert_eq!(result.valid_count, 6);
+        assert!(result.rows.iter().all(|r| r.status == RowStatus::Pending));
     }
 }

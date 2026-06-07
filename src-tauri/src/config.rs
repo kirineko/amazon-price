@@ -1,6 +1,6 @@
 pub const AMAZON_BASE: &str = "https://www.amazon.co.jp";
 pub const DEFAULT_ZIP: &str = "150-0001";
-pub const DEFAULT_RATE_PER_SEC: u32 = 3;
+pub const DEFAULT_REQUEST_INTERVAL_MS: u64 = 1500;
 pub const DEFAULT_CONCURRENCY: usize = 3;
 pub const MAX_RETRIES: u32 = 3;
 pub const RETRY_DELAYS_MS: [u64; 3] = [800, 1600, 3200];
@@ -35,7 +35,7 @@ pub fn product_url(asin: &str) -> String {
 }
 
 pub fn search_url(asin: &str) -> String {
-    format!("{AMAZON_BASE}/s?k={asin}")
+    format!("{AMAZON_BASE}/s?k={}", asin.to_lowercase())
 }
 
 pub fn friendly_network_error(err: impl std::fmt::Display) -> String {
@@ -52,4 +52,17 @@ pub fn is_valid_zip(zip: &str) -> bool {
     regex::Regex::new(r"^\d{3}-\d{4}$")
         .map(|re| re.is_match(zip))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_url_uses_lowercase_asin() {
+        assert_eq!(
+            search_url("B01BUQ774E"),
+            "https://www.amazon.co.jp/s?k=b01buq774e"
+        );
+    }
 }

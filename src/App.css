@@ -75,6 +75,14 @@ body {
   color: #1677ff !important;
 }
 
+.row-viewed {
+  opacity: 0.72;
+}
+
+.row-viewed td {
+  background: rgba(0, 0, 0, 0.02) !important;
+}
+
 .login-page {
   min-height: 100vh;
   display: flex;

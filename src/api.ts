@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ParseSkusResult,
+  ProxyConfig,
   RowResult,
   ScrapeOptions,
   ScrapeProgress,
@@ -12,7 +14,7 @@ export async function initSession(zipCode?: string): Promise<SessionStatus> {
   return invoke("init_session", { zipCode });
 }
 
-export async function parseSkus(text: string): Promise<[RowResult[], number]> {
+export async function parseSkus(text: string): Promise<ParseSkusResult> {
   return invoke("parse_skus", { text });
 }
 
@@ -48,6 +50,21 @@ export async function cancelScrape(): Promise<void> {
 
 export async function runSelfCheck(zipCode?: string): Promise<SelfCheckResult> {
   return invoke("run_self_check", { zipCode });
+}
+
+export async function getProxy(): Promise<ProxyConfig> {
+  return invoke("get_proxy");
+}
+
+export async function setProxy(config: ProxyConfig): Promise<ProxyConfig> {
+  return invoke("set_proxy", { config });
+}
+
+export async function testProxy(
+  config: ProxyConfig,
+  zipCode?: string,
+): Promise<SelfCheckResult> {
+  return invoke("test_proxy", { config, zipCode });
 }
 
 export function listenScrapeProgress(

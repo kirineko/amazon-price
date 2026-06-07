@@ -1,0 +1,75 @@
+# proxy-settings Specification
+
+## Purpose
+TBD - created by archiving change add-proxy-and-review-ux. Update Purpose after archive.
+
+## Requirements
+
+### Requirement: 默认自动套用系统/环境代理
+系统 SHALL 在未做手动配置时（代理模式为「自动」），自动探测并套用客户主机的系统代理与代理环境变量（含 SOCKS5）发起对 `amazon.co.jp` 的抓取请求。为此构建 HTTP 客户端时 MUST 启用 reqwest 的系统代理探测能力（`system-proxy`、`macos-system-configuration`）与 `socks` 支持，且 MUST NOT 关闭这些能力。
+
+#### Scenario: 客户配置了系统代理时自动走代理
+- **WHEN** 客户主机已在系统设置中配置 HTTP/HTTPS 代理且应用处于「自动」模式
+- **THEN** 应用的抓取请求经该系统代理发出，无需用户在应用内额外配置
+
+#### Scenario: 客户使用 SOCKS5 代理
+- **WHEN** 系统/环境代理为 SOCKS5
+- **THEN** 应用能够经该 SOCKS5 代理发起请求（已启用 `socks` 支持）
+
+### Requirement: 手动代理配置
+系统 SHALL 允许用户在界面手动设置代理地址，支持 `http://` 与 `socks5://` 方案，并 SHALL 支持可选的用户名/密码认证。手动模式生效时，系统 MUST 将所有抓取请求经该代理发出，覆盖系统/环境探测结果。
+
+#### Scenario: 设置 HTTP 代理
+- **WHEN** 用户选择手动模式并填入 `http://127.0.0.1:7890`
+- **THEN** 后续抓取请求经该地址代理发出
+
+#### Scenario: 设置带认证的代理
+- **WHEN** 用户填入代理地址并提供用户名/密码
+- **THEN** 请求携带对应的代理认证（Proxy-Authorization）
+
+#### Scenario: 手动覆盖系统代理
+- **WHEN** 系统已有代理但用户在应用内填了不同的手动代理
+- **THEN** 应用使用用户手动填写的代理，而非系统代理
+
+### Requirement: 关闭代理直连
+系统 SHALL 提供「关闭」模式，使抓取请求强制直连、不使用任何代理（包括忽略系统/环境代理）。
+
+#### Scenario: 关闭代理后直连
+- **WHEN** 用户选择「关闭」模式
+- **THEN** 抓取请求不经任何代理，直接连接 `amazon.co.jp`，即使系统配置了代理
+
+### Requirement: 代理连通性测试
+系统 SHALL 提供「测试代理」能力：用当前待应用的代理配置实际发起一次自检抓取（针对自检 ASIN），校验是否能取到日元（全角 `￥`/JPY）价格，并返回测试结果（成功/失败、样例价格或币种、可读信息）。测试 MUST NOT 影响或污染当前正在使用的抓取会话。
+
+#### Scenario: 测试通过
+- **WHEN** 待测代理可访问 `amazon.co.jp` 且取到日元价格
+- **THEN** 测试返回成功，并展示样例价格与币种 JPY
+
+#### Scenario: 测试失败
+- **WHEN** 待测代理不可用或取到非日元/无价格
+- **THEN** 测试返回失败并给出可读原因（如连接失败、检测到非日元币种）
+
+#### Scenario: 测试不影响当前会话
+- **WHEN** 用户在已有可用会话期间执行代理测试
+- **THEN** 当前会话状态不被测试覆盖或破坏
+
+### Requirement: 代理配置持久化与启动加载
+系统 SHALL 将用户的代理配置（模式、地址、认证）持久化到本地，并 SHALL 在应用启动/会话初始化时加载该配置作为默认值，使重启后无需重新配置。
+
+#### Scenario: 重启后保留配置
+- **WHEN** 用户设置代理后重启应用
+- **THEN** 应用加载上次保存的代理配置并据此初始化会话
+
+### Requirement: 代理变更后会话立即重建生效
+当用户变更代理配置时，系统 SHALL 使新配置对后续抓取立即生效。由于 HTTP 客户端构建后代理不可变更，系统 MUST 丢弃当前会话并在下次初始化/抓取时按新代理重建会话。
+
+#### Scenario: 改代理后新请求走新代理
+- **WHEN** 用户在已有会话期间保存了新的代理配置
+- **THEN** 系统重建会话，之后的抓取请求经新代理发出
+
+### Requirement: 无效代理地址的错误处理
+当手动代理地址无法被解析为有效代理时，系统 SHALL 在测试或保存时返回可读错误，并 MUST NOT 使应用进入无法抓取的崩溃状态。
+
+#### Scenario: 非法代理地址
+- **WHEN** 用户填入无法解析的代理地址
+- **THEN** 系统返回「代理地址无效」之类的可读错误提示，配置不被错误地应用

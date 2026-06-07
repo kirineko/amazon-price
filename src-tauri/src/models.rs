@@ -42,11 +42,36 @@ impl RowStatus {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ProxyMode {
+    #[default]
+    #[serde(alias = "Auto")]
+    Auto,
+    #[serde(alias = "Manual")]
+    Manual,
+    #[serde(alias = "Off")]
+    Off,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProxyConfig {
+    #[serde(default)]
+    pub mode: ProxyMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ScrapeOptions {
     pub zip_code: String,
-    pub rate_per_sec: u32,
+    pub request_interval_ms: u64,
     pub concurrency: usize,
 }
 
@@ -54,7 +79,7 @@ impl Default for ScrapeOptions {
     fn default() -> Self {
         Self {
             zip_code: crate::config::DEFAULT_ZIP.to_string(),
-            rate_per_sec: crate::config::DEFAULT_RATE_PER_SEC,
+            request_interval_ms: crate::config::DEFAULT_REQUEST_INTERVAL_MS,
             concurrency: crate::config::DEFAULT_CONCURRENCY,
         }
     }
@@ -84,6 +109,15 @@ pub struct ScrapeProgress {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ParseSkusResult {
+    pub rows: Vec<RowResult>,
+    pub duplicate_count: usize,
+    pub invalid_count: usize,
+    pub valid_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionStatus {
     pub initialized: bool,
     pub zip_code: String,
@@ -107,7 +141,7 @@ pub fn now_iso() -> String {
 }
 
 pub fn build_amazon_url(asin: &str) -> String {
-    crate::config::product_url(asin)
+    crate::config::search_url(asin)
 }
 
 pub fn empty_row(sku: String, dp_code: String, asin: String, status: RowStatus, error: Option<String>) -> RowResult {

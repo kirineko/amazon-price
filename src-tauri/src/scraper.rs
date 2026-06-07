@@ -19,7 +19,7 @@ impl ScrapeEngine {
     pub async fn scrape_rows(
         session: &mut AmazonSession,
         rows: Vec<RowResult>,
-        rate_per_sec: u32,
+        request_interval_ms: u64,
         concurrency: usize,
         cancel_flag: Arc<AtomicBool>,
         on_progress: Option<ProgressCallback>,
@@ -76,7 +76,7 @@ impl ScrapeEngine {
                 &batch,
                 &mut output,
                 &shared_session,
-                rate_per_sec,
+                request_interval_ms,
                 concurrency,
                 Arc::clone(&cancel_flag),
                 on_progress.clone(),
@@ -116,14 +116,17 @@ async fn scrape_batch(
     batch: &[(usize, RowResult)],
     output: &mut [Option<RowResult>],
     session: &Arc<AmazonSession>,
-    rate_per_sec: u32,
+    request_interval_ms: u64,
     concurrency: usize,
     cancel_flag: Arc<AtomicBool>,
     on_progress: Option<ProgressCallback>,
     done_counter: Arc<AtomicUsize>,
     total: usize,
 ) {
-    let quota = Quota::per_second(NonZeroU32::new(rate_per_sec.max(1)).unwrap());
+    let period_ms = request_interval_ms.max(500);
+    let quota = Quota::with_period(Duration::from_millis(period_ms))
+        .expect("valid quota period")
+        .allow_burst(NonZeroU32::new(1).unwrap());
     let limiter = Arc::new(RateLimiter::direct(quota));
     let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
     let mut join_set = JoinSet::new();
@@ -291,6 +294,7 @@ async fn scrape_one_with_retry(
     cancel_flag: Arc<AtomicBool>,
 ) -> RowResult {
     let mut current = row.clone();
+    current.amazon_url = config::search_url(&current.asin);
     current.status = RowStatus::Pending;
     current.error = None;
 

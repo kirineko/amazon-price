@@ -1,9 +1,10 @@
 use crate::config::{self, AMAZON_BASE, UNAVAILABLE_MARKERS};
+use crate::models::{ProxyConfig, ProxyMode};
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use reqwest::cookie::Jar;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, REFERER, USER_AGENT};
-use reqwest::Client;
+use reqwest::{Client, Proxy};
 use scraper::{Html, Selector};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -20,18 +21,22 @@ pub struct AmazonSession {
 }
 
 impl AmazonSession {
-    pub fn new(zip_code: &str) -> Result<Self> {
+    pub fn new(zip_code: &str, proxy: &ProxyConfig) -> Result<Self> {
         if !config::is_valid_zip(zip_code) {
             anyhow::bail!("邮编格式无效，应为 123-4567");
         }
 
         let cookie_jar = Arc::new(Jar::default());
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .cookie_provider(Arc::clone(&cookie_jar))
             .gzip(true)
             .brotli(true)
             .connect_timeout(Duration::from_secs(config::SESSION_CONNECT_TIMEOUT_SECS))
-            .timeout(Duration::from_secs(config::SESSION_REQUEST_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(config::SESSION_REQUEST_TIMEOUT_SECS));
+
+        builder = apply_proxy(builder, proxy)?;
+
+        let client = builder
             .build()
             .context("failed to build HTTP client")?;
 
@@ -54,6 +59,7 @@ impl AmazonSession {
 
     pub async fn init(&mut self) -> Result<()> {
         self.seed_currency_cookies();
+        self.fetch_language_page().await?;
         let token = self.fetch_glow_token().await?;
         self.set_delivery_zip(&token).await?;
         self.seed_currency_cookies();
@@ -80,10 +86,20 @@ impl AmazonSession {
         Err(last_err.unwrap_or_else(|| anyhow!("会话初始化失败")))
     }
 
+    async fn fetch_language_page(&self) -> Result<()> {
+        let url = format!("{AMAZON_BASE}/?language=ja_JP");
+        let html = self.fetch_page_html(&url).await?;
+        if is_waf_challenge(&html) {
+            // 首页可能被 WAF 拦截，后续会从商品页取 token
+            return Ok(());
+        }
+        Ok(())
+    }
+
     async fn fetch_glow_token(&self) -> Result<String> {
         let urls = [
-            format!("{AMAZON_BASE}/?language=ja_JP"),
             config::product_url(config::SELF_CHECK_ASIN),
+            format!("{AMAZON_BASE}/?language=ja_JP"),
         ];
 
         let mut last_err: Option<anyhow::Error> = None;
@@ -251,6 +267,29 @@ impl AmazonSession {
             .as_ref()
             .map(|loc| loc.contains(&self.zip_code) || loc.contains("渋谷") || loc.contains("東京"))
             .unwrap_or(false)
+    }
+}
+
+fn apply_proxy(builder: reqwest::ClientBuilder, config: &ProxyConfig) -> Result<reqwest::ClientBuilder> {
+    match config.mode {
+        ProxyMode::Off => Ok(builder.no_proxy()),
+        ProxyMode::Manual => {
+            let url = config
+                .url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("手动代理模式下必须填写代理地址"))?;
+            let mut req_proxy =
+                Proxy::all(url).with_context(|| format!("代理地址无效: {url}"))?;
+            if let (Some(username), Some(password)) = (&config.username, &config.password) {
+                if !username.is_empty() {
+                    req_proxy = req_proxy.basic_auth(username, password);
+                }
+            }
+            Ok(builder.proxy(req_proxy))
+        }
+        ProxyMode::Auto => Ok(builder),
     }
 }
 
@@ -659,6 +698,17 @@ mod tests {
         let extracted = extract_whole_fraction_price(&document);
         assert_eq!(extracted.currency.as_deref(), Some("USD"));
         assert!(!is_jpy_currency(extracted.currency.as_deref()));
+    }
+
+    #[test]
+    fn rejects_empty_manual_proxy_url() {
+        let config = ProxyConfig {
+            mode: ProxyMode::Manual,
+            url: Some("   ".to_string()),
+            username: None,
+            password: None,
+        };
+        assert!(AmazonSession::new("150-0001", &config).is_err());
     }
 
     #[test]
