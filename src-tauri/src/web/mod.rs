@@ -49,9 +49,18 @@ pub async fn serve(config: WebConfig) -> anyhow::Result<()> {
 
 pub fn load_config() -> anyhow::Result<WebConfig> {
     let password_hash = std::env::var("APP_PASSWORD_HASH")
-        .map_err(|_| anyhow::anyhow!("缺少环境变量 APP_PASSWORD_HASH"))?;
+        .map_err(|_| anyhow::anyhow!("缺少环境变量 APP_PASSWORD_HASH"))?
+        .trim()
+        .to_string();
     if password_hash.is_empty() {
         anyhow::bail!("APP_PASSWORD_HASH 不能为空");
+    }
+    if argon2::password_hash::PasswordHash::new(&password_hash).is_err() {
+        anyhow::bail!(
+            "APP_PASSWORD_HASH 格式无效（可能被 shell/docker 吃掉了 $ 符号）。\
+             请重新运行 cargo run --example hash_password，\
+             并把输出的 APP_PASSWORD_HASH=... 行原样粘贴到 .env（哈希里的每个 $ 要写成 $$）"
+        );
     }
 
     let static_dir = std::env::var("STATIC_DIR")

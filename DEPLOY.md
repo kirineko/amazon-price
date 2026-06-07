@@ -17,7 +17,24 @@ cd src-tauri
 cargo run --example hash_password -- '你的强密码'
 ```
 
-编辑 `.env`：
+**把命令输出的 `APP_PASSWORD_HASH=...` 整行原样粘贴进 `.env`**（不要手敲哈希）。
+
+> Argon2 哈希里有很多 `$`。Docker Compose 会把 `.env` 中的 `$` 当变量展开，**必须写成 `$$`**。  
+> `hash_password` 示例已自动输出 docker 安全格式，例如：  
+> `APP_PASSWORD_HASH=$$argon2id$$v=19$$m=19456,t=2,p=1$$...`
+
+错误示例（会导致服务器登录永远失败）：
+
+```env
+APP_PASSWORD_HASH=$argon2id$v=19$m=19456,...   # ❌ $ 会被吃掉
+```
+
+粘贴后重启并检查容器能否启动（启动时会校验哈希格式）：
+
+```bash
+docker compose up -d
+docker compose logs app | tail -20
+```
 
 | 变量 | 首次部署（HTTP） | certbot 完成后 |
 |---|---|---|
@@ -103,6 +120,23 @@ curl -s -c /tmp/cookies.txt -X POST https://a.kirineko.tech/api/login \
 ```
 
 浏览器访问 `https://a.kirineko.tech/` 登录并测试抓取。
+
+---
+
+## 5.1 登录失败排查
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 容器启动报错「APP_PASSWORD_HASH 格式无效」 | `.env` 中 `$` 被 compose 展开 | 用 `hash_password` 输出的 `$$` 格式重写 `.env` |
+| 登录返回 401「认证失败」 | 哈希损坏或密码不对 | 确认 `.env` 哈希完整；重新生成并 `docker compose up -d` |
+| 登录成功但立刻跳回登录页 | HTTPS 下 `SECURE_COOKIES=false` | 设 `SECURE_COOKIES=true` 并重启 |
+
+在服务器上查看容器实际收到的哈希前缀（不含完整秘密）：
+
+```bash
+docker compose exec app sh -c 'echo "$APP_PASSWORD_HASH" | cut -c1-20'
+# 应以 $argon2id$v=19$ 开头；若为空或以 argon2id 开头则格式错了
+```
 
 ---
 
