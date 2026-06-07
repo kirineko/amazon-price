@@ -1,0 +1,52 @@
+:root {
+  font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  color: #1f1f1f;
+  background: #f5f7fb;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #f5f7fb;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-layout {
+  min-height: 100vh;
+  background: #f5f7fb;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  background: linear-gradient(135deg, #0f3d7a 0%, #145ea8 100%);
+  height: auto;
+  line-height: 1.4;
+}
+
+.app-content {
+  padding: 24px;
+  max-width: 1440px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.panel-card {
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(15, 61, 122, 0.08);
+}
+
+.ant-table-wrapper {
+  overflow: auto;
+}
+
+@media (max-width: 768px) {
+  .app-content {
+    padding: 16px;
+  }
+}

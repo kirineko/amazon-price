@@ -1,0 +1,32 @@
+[package]
+name = "amazon-price-scraper"
+version = "0.1.0"
+description = "Amazon.co.jp price scraper desktop app"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "amazon_price_scraper_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["cookies", "gzip", "brotli", "json", "native-tls"] }
+scraper = "0.22"
+tokio = { version = "1", features = ["full"] }
+governor = "0.8"
+anyhow = "1"
+thiserror = "2"
+regex = "1"
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
