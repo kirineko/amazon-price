@@ -1,4 +1,3 @@
-#[cfg(feature = "desktop")]
 mod commands;
 pub mod config;
 pub mod models;
@@ -8,15 +7,8 @@ pub mod service;
 pub mod sku;
 pub mod state;
 
-#[cfg(feature = "web")]
-pub mod web;
-
 pub use state::AppState;
 
-#[cfg(feature = "web")]
-pub use web::WebConfig;
-
-#[cfg(feature = "desktop")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -39,7 +31,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod integration_tests {
-    use super::region::{parse_product_page, AmazonSession};
+    use super::region::AmazonSession;
     use super::sku;
 
     #[tokio::test]
@@ -79,11 +71,7 @@ mod integration_tests {
 
         let mut success = 0;
         for row in rows {
-            let html = session
-                .fetch_product_html(&row.asin)
-                .await
-                .expect("product html");
-            let parsed = parse_product_page(&html, &row.asin);
+            let parsed = session.fetch_price(&row.asin).await.expect("fetch price");
             if parsed.price_text.is_some() {
                 success += 1;
             }

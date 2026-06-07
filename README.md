@@ -7,7 +7,7 @@
 - 支持多行文本输入或上传 `.txt` 文件
 - SKU 解析规则：`gx-b0dfxqwpps149` → dp code `b0dfxqwpps` → ASIN `B0DFXQWPPS`
 - 自动初始化日本地区会话（默认邮编 `150-0001`，可配置）
-- 直达商品页 `https://www.amazon.co.jp/dp/{ASIN}?th=1` 抓取价格
+- 搜索页优先取价，商品页 `?th=1&psc=1` 兜底；大批量（>100 条）自动分批冷却
 - 频率控制：默认最多 3 条/秒，支持并发
 - 结果字段：SKU、dp code、ASIN、价格(JPY)、Amazon 链接、状态、抓取时间
 - 支持单条刷新、全部刷新、CSV 导出（UTF-8 BOM）

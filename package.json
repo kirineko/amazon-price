@@ -5,11 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:web": "vite",
     "build": "tsc && vite build",
-    "build:web": "npm run build",
     "preview": "vite preview",
-    "start:web": "cd src-tauri && cargo run --bin amazon-price-web",
     "tauri": "tauri"
   },
   "dependencies": {

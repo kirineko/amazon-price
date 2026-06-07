@@ -2,7 +2,6 @@ import {
   CloudDownloadOutlined,
   CloudSyncOutlined,
   CopyOutlined,
-  LogoutOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
   StopOutlined,
@@ -30,13 +29,11 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useState } from "react";
 import {
-  AuthError,
   cancelScrape,
   downloadCsv,
   exportCsv,
   initSession,
   listenScrapeProgress,
-  logout,
   parseSkus,
   refreshAll,
   refreshOne,
@@ -56,11 +53,7 @@ const DEFAULT_OPTIONS: ScrapeOptions = {
   concurrency: 3,
 };
 
-interface AppProps {
-  onLogout: () => void;
-}
-
-function App({ onLogout }: AppProps) {
+function App() {
   const [inputText, setInputText] = useState("");
   const [rows, setRows] = useState<RowResult[]>([]);
   const [duplicateCount, setDuplicateCount] = useState(0);
@@ -73,62 +66,53 @@ function App({ onLogout }: AppProps) {
   const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
-    const unlisten = listenScrapeProgress((payload) => {
-      setProgress({ done: payload.done, total: payload.total });
-
-      if (payload.phase === "Cooling") {
-        const batchIndex = payload.batchIndex ?? 0;
-        const batchTotal = payload.batchTotal ?? 0;
-        const secs = payload.cooldownSecs ?? 30;
-        setCooldownMessage(
-          `批次 ${batchIndex}/${batchTotal} 完成，冷却 ${secs}s…`,
-        );
-        setLogs((current) => [
-          `[${new Date().toLocaleTimeString()}] 批次冷却 ${secs}s（${batchIndex}/${batchTotal}）`,
-          ...current.slice(0, 49),
-        ]);
-        return;
-      }
-
-      setCooldownMessage(null);
-      setRows((current) =>
-        current.map((row) =>
-          row.asin === payload.row.asin ? payload.row : row,
-        ),
-      );
-      setLogs((current) => [
-        `[${new Date().toLocaleTimeString()}] ${payload.row.asin} -> ${STATUS_LABELS[payload.row.status]} ${payload.row.priceText ?? ""}`,
-        ...current.slice(0, 49),
-      ]);
-    });
+    let unlisten: (() => void) | undefined;
 
     const bootstrap = async () => {
       try {
-        setSessionMessage("正在连接 Amazon.co.jp（可能需要 10–30 秒）...");
         const session = await initSession();
         setSessionMessage(session.message);
-
-        const selfCheck = await runSelfCheck();
-        if (selfCheck.ok) {
-          setSelfCheckMessage(selfCheck.message);
-        } else {
-          setSelfCheckMessage(selfCheck.message);
-        }
+        const check = await runSelfCheck();
+        setSelfCheckMessage(check.ok ? "自检通过" : check.message);
       } catch (error) {
-        if (error instanceof AuthError) {
-          onLogout();
+        setSessionMessage(`会话初始化失败: ${String(error)}`);
+      }
+
+      unlisten = await listenScrapeProgress((payload) => {
+        setProgress({ done: payload.done, total: payload.total });
+
+        if (payload.phase === "Cooling") {
+          const batchIndex = payload.batchIndex ?? 0;
+          const batchTotal = payload.batchTotal ?? 0;
+          const secs = payload.cooldownSecs ?? 30;
+          setCooldownMessage(
+            `批次 ${batchIndex}/${batchTotal} 完成，冷却 ${secs}s…`,
+          );
+          setLogs((current) => [
+            `[${new Date().toLocaleTimeString()}] 批次冷却 ${secs}s（${batchIndex}/${batchTotal}）`,
+            ...current.slice(0, 49),
+          ]);
           return;
         }
-        setSessionMessage(String(error));
-        setSelfCheckMessage(null);
-      }
+
+        setCooldownMessage(null);
+        setRows((current) =>
+          current.map((row) =>
+            row.asin === payload.row.asin ? payload.row : row,
+          ),
+        );
+        setLogs((current) => [
+          `[${new Date().toLocaleTimeString()}] ${payload.row.asin} -> ${STATUS_LABELS[payload.row.status]} ${payload.row.priceText ?? ""}`,
+          ...current.slice(0, 49),
+        ]);
+      });
     };
 
     void bootstrap();
     return () => {
-      unlisten();
+      unlisten?.();
     };
-  }, [onLogout]);
+  }, []);
 
   const validCount = useMemo(
     () => rows.filter((row) => row.status !== "FormatError").length,
@@ -149,39 +133,21 @@ function App({ onLogout }: AppProps) {
   );
 
   const handleParse = async () => {
-    try {
-      const [parsedRows, duplicates] = await parseSkus(inputText);
-      setRows(parsedRows);
-      setDuplicateCount(duplicates);
-      setProgress({ done: 0, total: parsedRows.length });
-      message.success(
-        `识别到 ${parsedRows.length} 条 SKU${duplicates ? `，去重 ${duplicates} 条` : ""}`,
-      );
-    } catch (error) {
-      if (error instanceof AuthError) {
-        onLogout();
-        return;
-      }
-      message.error(String(error));
-    }
+    const [parsedRows, duplicates] = await parseSkus(inputText);
+    setRows(parsedRows);
+    setDuplicateCount(duplicates);
+    setProgress({ done: 0, total: parsedRows.length });
+    message.success(`识别到 ${parsedRows.length} 条 SKU${duplicates ? `，去重 ${duplicates} 条` : ""}`);
   };
 
   const handleUpload = async (file: File) => {
     const text = await file.text();
     setInputText(text);
-    try {
-      const [parsedRows, duplicates] = await parseSkus(text);
-      setRows(parsedRows);
-      setDuplicateCount(duplicates);
-      setProgress({ done: 0, total: parsedRows.length });
-      message.success(`已从文件读取 ${parsedRows.length} 条 SKU`);
-    } catch (error) {
-      if (error instanceof AuthError) {
-        onLogout();
-        return;
-      }
-      message.error(String(error));
-    }
+    const [parsedRows, duplicates] = await parseSkus(text);
+    setRows(parsedRows);
+    setDuplicateCount(duplicates);
+    setProgress({ done: 0, total: parsedRows.length });
+    message.success(`已从文件读取 ${parsedRows.length} 条 SKU`);
     return false;
   };
 
@@ -194,15 +160,12 @@ function App({ onLogout }: AppProps) {
     setRunning(true);
     setProgress({ done: 0, total: rows.length });
     try {
+      const session = await initSession();
+      setSessionMessage(session.message);
       const result = await startScrape(rows, options);
       setRows(result);
-      setSessionMessage("抓取完成");
       message.success("抓取完成");
     } catch (error) {
-      if (error instanceof AuthError) {
-        onLogout();
-        return;
-      }
       message.error(`抓取失败: ${String(error)}`);
     } finally {
       setRunning(false);
@@ -210,15 +173,9 @@ function App({ onLogout }: AppProps) {
   };
 
   const handleCancel = async () => {
-    try {
-      await cancelScrape();
-      setRunning(false);
-      message.info("已请求取消");
-    } catch (error) {
-      if (error instanceof AuthError) {
-        onLogout();
-      }
-    }
+    await cancelScrape();
+    setRunning(false);
+    message.info("已请求取消");
   };
 
   const handleRefreshAll = async () => {
@@ -231,10 +188,6 @@ function App({ onLogout }: AppProps) {
       setRows(result);
       message.success("全部刷新完成");
     } catch (error) {
-      if (error instanceof AuthError) {
-        onLogout();
-        return;
-      }
       message.error(String(error));
     } finally {
       setRunning(false);
@@ -246,25 +199,9 @@ function App({ onLogout }: AppProps) {
       message.warning("没有可导出的数据");
       return;
     }
-    try {
-      const csv = await exportCsv(rows);
-      downloadCsv(csv);
-      message.success("CSV 已导出");
-    } catch (error) {
-      if (error instanceof AuthError) {
-        onLogout();
-        return;
-      }
-      message.error(String(error));
-    }
-  };
-
-  const handleLogout = async () => {
-    try {
-      await logout();
-    } finally {
-      onLogout();
-    }
+    const csv = await exportCsv(rows);
+    downloadCsv(csv);
+    message.success("CSV 已导出");
   };
 
   const copyPriceValue = async (record: RowResult) => {
@@ -362,10 +299,6 @@ function App({ onLogout }: AppProps) {
                 current.map((row) => (row.asin === updated.asin ? updated : row)),
               );
             } catch (error) {
-              if (error instanceof AuthError) {
-                onLogout();
-                return;
-              }
               message.error(String(error));
             } finally {
               setRunning(false);
@@ -389,27 +322,13 @@ function App({ onLogout }: AppProps) {
             批量解析 SKU，抓取 Amazon.co.jp 商品页 buybox 现价
           </Text>
         </div>
-        <Button
-          type="text"
-          icon={<LogoutOutlined />}
-          style={{ color: "#fff" }}
-          onClick={() => void handleLogout()}
-        >
-          退出
-        </Button>
       </Header>
 
       <Content className="app-content">
         <Space direction="vertical" size="large" style={{ width: "100%" }}>
           <Alert
             className="session-alert"
-            type={
-              selfCheckMessage?.includes("自检通过")
-                ? "success"
-                : selfCheckMessage
-                  ? "warning"
-                  : "warning"
-            }
+            type={selfCheckMessage?.includes("通过") ? "success" : "info"}
             showIcon
             message={
               cooldownMessage ??
@@ -496,11 +415,7 @@ function App({ onLogout }: AppProps) {
                   >
                     开始抓取
                   </Button>
-                  <Button
-                    icon={<StopOutlined />}
-                    disabled={!running}
-                    onClick={() => void handleCancel()}
-                  >
+                  <Button icon={<StopOutlined />} disabled={!running} onClick={() => void handleCancel()}>
                     取消
                   </Button>
                   <Button
