@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      STATIC_DIR: /app/dist
+      PORT: ${PORT:-9080}
+      SECURE_COOKIES: ${SECURE_COOKIES:-true}
+    ports:
+      # 仅绑定本机，由宿主机 nginx 反代；勿占用 8080/8000
+      - "127.0.0.1:${PORT:-9080}:${PORT:-9080}"

@@ -31,11 +31,11 @@ pub fn parse_dp_code(raw: &str) -> Result<(String, String), SkuError> {
         body = body[3..].to_string();
     }
 
-    if body.len() <= 3 {
-        return Err(SkuError::InvalidFormat(body));
+    if body.len() == 13 && body[10..].chars().all(|c| c.is_ascii_digit()) {
+        body = body[..10].to_string();
     }
 
-    let dp_code = body[..body.len() - 3].to_string();
+    let dp_code = body;
     let asin = dp_code.to_uppercase();
 
     if !is_valid_asin(&asin) {
@@ -128,6 +128,47 @@ mod tests {
     #[test]
     fn rejects_invalid_format() {
         assert!(parse_sku_line("gx-ab").is_err());
+    }
+
+    #[test]
+    fn parses_bare_asin() {
+        let parsed = parse_sku_line("b0dfxqwpps").unwrap();
+        assert_eq!(parsed.dp_code, "b0dfxqwpps");
+        assert_eq!(parsed.asin, "B0DFXQWPPS");
+    }
+
+    #[test]
+    fn parses_bare_asin_ending_with_digits() {
+        let parsed = parse_sku_line("4873115655").unwrap();
+        assert_eq!(parsed.dp_code, "4873115655");
+        assert_eq!(parsed.asin, "4873115655");
+    }
+
+    #[test]
+    fn parses_uppercase_prefix() {
+        let parsed = parse_sku_line("GX-B018AOIO1Y150").unwrap();
+        assert_eq!(parsed.dp_code, "B018AOIO1Y");
+        assert_eq!(parsed.asin, "B018AOIO1Y");
+    }
+
+    #[test]
+    fn rejects_13_char_non_digit_suffix() {
+        assert!(parse_sku_line("b0dfxqwppsabc").is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_lengths() {
+        assert!(parse_sku_line("b0dfxqwpps1").is_err());
+        assert!(parse_sku_line("b0dfxqwp").is_err());
+    }
+
+    #[test]
+    fn deduplicates_bare_asin_with_suffixed_sku() {
+        let text = "gx-b0dfxqwpps149\nb0dfxqwpps\n";
+        let (rows, dup) = parse_skus_from_text(text);
+        assert_eq!(dup, 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].asin, "B0DFXQWPPS");
     }
 
     #[test]

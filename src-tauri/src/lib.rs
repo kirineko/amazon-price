@@ -1,34 +1,27 @@
+#[cfg(feature = "desktop")]
 mod commands;
 pub mod config;
 pub mod models;
 pub mod region;
 pub mod scraper;
+pub mod service;
 pub mod sku;
+pub mod state;
 
-use commands::AppState;
-use tauri::Manager;
+#[cfg(feature = "web")]
+pub mod web;
 
+pub use state::AppState;
+
+#[cfg(feature = "web")]
+pub use web::WebConfig;
+
+#[cfg(feature = "desktop")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new())
-        .setup(|app| {
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let state = handle.state::<AppState>();
-                let zip = crate::config::DEFAULT_ZIP.to_string();
-                if let Ok(mut session) = crate::region::AmazonSession::new(&zip) {
-                    match crate::scraper::self_check(&mut session).await {
-                        Ok((true, _, msg)) => println!("startup self-check: {msg}"),
-                        Ok((false, _, msg)) => eprintln!("startup self-check warning: {msg}"),
-                        Err(err) => eprintln!("startup self-check skipped: {err:#}"),
-                    }
-                    *state.session.lock() = Some(session);
-                }
-            });
-            Ok(())
-        })
         .invoke_handler(tauri::generate_handler![
             commands::init_session,
             commands::parse_skus,
@@ -53,7 +46,7 @@ mod integration_tests {
     #[ignore = "requires live access to amazon.co.jp"]
     async fn region_session_sets_japan_delivery() {
         let mut session = AmazonSession::new("150-0001").expect("session");
-        session.init().await.expect("init session");
+        session.init_with_retry().await.expect("init session");
         assert!(
             session
                 .delivery_location
@@ -82,7 +75,7 @@ mod integration_tests {
         assert_eq!(rows.len(), 6);
 
         let mut session = AmazonSession::new("150-0001").expect("session");
-        session.init().await.expect("init session");
+        session.init_with_retry().await.expect("init session");
 
         let mut success = 0;
         for row in rows {

@@ -8,9 +8,10 @@ use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+
+pub type ProgressCallback = Arc<dyn Fn(ScrapeProgress) + Send + Sync>;
 
 pub struct ScrapeEngine;
 
@@ -21,9 +22,9 @@ impl ScrapeEngine {
         rate_per_sec: u32,
         concurrency: usize,
         cancel_flag: Arc<AtomicBool>,
-        app: AppHandle,
+        on_progress: Option<ProgressCallback>,
     ) -> Result<Vec<RowResult>> {
-        session.init().await?;
+        session.init_with_retry().await?;
         let shared_session = Arc::new(session.clone());
 
         let total = rows.len();
@@ -39,14 +40,7 @@ impl ScrapeEngine {
             if row.status == RowStatus::FormatError {
                 output[index] = Some(row.clone());
                 let done = done_counter.fetch_add(1, Ordering::SeqCst) + 1;
-                let _ = app.emit(
-                    "scrape-progress",
-                    ScrapeProgress {
-                        done,
-                        total,
-                        row,
-                    },
-                );
+                emit_progress(&on_progress, done, total, row);
                 continue;
             }
 
@@ -54,7 +48,7 @@ impl ScrapeEngine {
             let semaphore = Arc::clone(&semaphore);
             let session = Arc::clone(&shared_session);
             let cancel_flag = Arc::clone(&cancel_flag);
-            let app = app.clone();
+            let on_progress = on_progress.clone();
             let done_counter = Arc::clone(&done_counter);
 
             join_set.spawn(async move {
@@ -72,14 +66,7 @@ impl ScrapeEngine {
                 };
 
                 let done = done_counter.fetch_add(1, Ordering::SeqCst) + 1;
-                let _ = app.emit(
-                    "scrape-progress",
-                    ScrapeProgress {
-                        done,
-                        total,
-                        row: result.clone(),
-                    },
-                );
+                emit_progress(&on_progress, done, total, result.clone());
                 (index, result)
             });
         }
@@ -92,6 +79,12 @@ impl ScrapeEngine {
         }
 
         Ok(output.into_iter().flatten().collect())
+    }
+}
+
+fn emit_progress(on_progress: &Option<ProgressCallback>, done: usize, total: usize, row: RowResult) {
+    if let Some(cb) = on_progress {
+        cb(ScrapeProgress { done, total, row });
     }
 }
 
@@ -166,7 +159,7 @@ async fn fetch_and_parse(
 }
 
 pub async fn self_check(session: &mut AmazonSession) -> Result<(bool, Option<String>, String)> {
-    session.init().await?;
+    session.init_with_retry().await?;
     let html = session
         .fetch_product_html(config::SELF_CHECK_ASIN)
         .await?;

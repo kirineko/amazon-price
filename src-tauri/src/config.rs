@@ -4,6 +4,9 @@ pub const DEFAULT_RATE_PER_SEC: u32 = 3;
 pub const DEFAULT_CONCURRENCY: usize = 3;
 pub const MAX_RETRIES: u32 = 3;
 pub const RETRY_DELAYS_MS: [u64; 3] = [800, 1600, 3200];
+pub const SESSION_CONNECT_TIMEOUT_SECS: u64 = 20;
+pub const SESSION_REQUEST_TIMEOUT_SECS: u64 = 60;
+pub const SESSION_INIT_RETRIES: u32 = 3;
 pub const SELF_CHECK_ASIN: &str = "B0DFXQWPPS";
 
 pub const USER_AGENTS: &[&str] = &[
@@ -29,6 +32,16 @@ pub fn product_url(asin: &str) -> String {
     format!("{AMAZON_BASE}/dp/{asin}?th=1")
 }
 
+pub fn friendly_network_error(err: impl std::fmt::Display) -> String {
+    let msg = err.to_string();
+    if msg.contains("timed out") || msg.contains("timeout") {
+        return "连接 Amazon.co.jp 超时，请检查网络、DNS 或代理/VPN 后重试".to_string();
+    }
+    if msg.contains("connection") || msg.contains("dns") || msg.contains("Connect") {
+        return format!("无法连接 Amazon.co.jp，请检查网络后重试（{msg}）");
+    }
+    msg
+}
 pub fn is_valid_zip(zip: &str) -> bool {
     regex::Regex::new(r"^\d{3}-\d{4}$")
         .map(|re| re.is_match(zip))

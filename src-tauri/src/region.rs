@@ -24,7 +24,8 @@ impl AmazonSession {
             .cookie_store(true)
             .gzip(true)
             .brotli(true)
-            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(config::SESSION_CONNECT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(config::SESSION_REQUEST_TIMEOUT_SECS))
             .build()
             .context("failed to build HTTP client")?;
 
@@ -36,25 +37,29 @@ impl AmazonSession {
     }
 
     pub async fn init(&mut self) -> Result<()> {
-        self.set_language_cookies().await?;
         let token = self.fetch_glow_token().await.unwrap_or_default();
         self.set_delivery_zip(&token).await?;
-        if self.delivery_location.is_none() {
-            self.delivery_location = self.fetch_delivery_location().await?;
-        }
         Ok(())
     }
 
-    async fn set_language_cookies(&self) -> Result<()> {
-        let _ = self
-            .client
-            .get(format!("{AMAZON_BASE}/?language=ja_JP"))
-            .headers(default_headers(None))
-            .header("Cookie", "lc-acbjp=ja_JP; i18n-prefs=JPY")
-            .send()
-            .await
-            .context("failed to set language cookies")?;
-        Ok(())
+    pub async fn init_with_retry(&mut self) -> Result<()> {
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..config::SESSION_INIT_RETRIES {
+            match self.init().await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_err = Some(err);
+                    if attempt + 1 < config::SESSION_INIT_RETRIES {
+                        let delay = config::RETRY_DELAYS_MS
+                            .get(attempt as usize)
+                            .copied()
+                            .unwrap_or(3200);
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("会话初始化失败")))
     }
 
     async fn fetch_glow_token(&self) -> Result<String> {
