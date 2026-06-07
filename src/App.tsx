@@ -21,7 +21,6 @@ import {
   Collapse,
   Drawer,
   Input,
-  InputNumber,
   Layout,
   Progress,
   Radio,
@@ -45,7 +44,6 @@ import {
   initSession,
   listenScrapeProgress,
   parseSkus,
-  refreshAll,
   refreshOne,
   runSelfCheck,
   setProxy,
@@ -57,12 +55,15 @@ import type { ParseSkusResult, ProxyConfig, RowResult, ScrapeOptions } from "./t
 import { STATUS_COLORS, STATUS_LABELS } from "./types";
 
 const { Header, Content } = Layout;
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
 const { TextArea } = Input;
+
+const CHUNK_SIZE = 50;
+
+type ScrapeState = "idle" | "running" | "paused" | "done";
 
 const DEFAULT_OPTIONS: ScrapeOptions = {
   requestIntervalMs: 1500,
-  concurrency: 3,
 };
 
 const DEFAULT_PROXY: ProxyConfig = {
@@ -80,17 +81,14 @@ function App() {
   const [rows, setRows] = useState<RowResult[]>([]);
   const [duplicateCount, setDuplicateCount] = useState(0);
   const [invalidCount, setInvalidCount] = useState(0);
-  const [options, setOptions] = useState<ScrapeOptions>(DEFAULT_OPTIONS);
+  const [options] = useState<ScrapeOptions>(DEFAULT_OPTIONS);
   const [proxyConfig, setProxyConfig] = useState<ProxyConfig>(DEFAULT_PROXY);
   const [proxyTesting, setProxyTesting] = useState(false);
   const [proxySaving, setProxySaving] = useState(false);
   const [proxyPanelOpen, setProxyPanelOpen] = useState<string[]>([]);
-  const [running, setRunning] = useState(false);
-  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [scrapeState, setScrapeState] = useState<ScrapeState>("idle");
   const [sessionMessage, setSessionMessage] = useState("正在初始化会话...");
   const [selfCheckMessage, setSelfCheckMessage] = useState<string | null>(null);
-  const [cooldownMessage, setCooldownMessage] = useState<string | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
   const [reviewIndex, setReviewIndex] = useState<number | null>(null);
   const [viewed, setViewed] = useState<Set<string>>(() => new Set());
 
@@ -137,32 +135,11 @@ function App() {
       }
 
       unlisten = await listenScrapeProgress((payload) => {
-        setProgress({ done: payload.done, total: payload.total });
-
-        if (payload.phase === "Cooling") {
-          const batchIndex = payload.batchIndex ?? 0;
-          const batchTotal = payload.batchTotal ?? 0;
-          const secs = payload.cooldownSecs ?? 30;
-          setCooldownMessage(
-            `批次 ${batchIndex}/${batchTotal} 完成，冷却 ${secs}s…`,
-          );
-          setLogs((current) => [
-            `[${new Date().toLocaleTimeString()}] 批次冷却 ${secs}s（${batchIndex}/${batchTotal}）`,
-            ...current.slice(0, 49),
-          ]);
-          return;
-        }
-
-        setCooldownMessage(null);
         setRows((current) =>
           current.map((row) =>
             row.asin === payload.row.asin ? payload.row : row,
           ),
         );
-        setLogs((current) => [
-          `[${new Date().toLocaleTimeString()}] ${payload.row.asin} -> ${STATUS_LABELS[payload.row.status]} ${payload.row.priceText ?? ""}`,
-          ...current.slice(0, 49),
-        ]);
       });
     };
 
@@ -183,19 +160,50 @@ function App() {
   }, [manualProxy, proxyConfig.mode, proxyConfig.url]);
 
   const validCount = useMemo(
-    () => rows.filter((row) => row.status !== "FormatError").length,
+    () => rows.filter((row) => row.status !== "formatError").length,
     [rows],
   );
 
+  const pendingCount = useMemo(
+    () =>
+      rows.filter(
+        (row) => row.status !== "formatError" && row.status === "pending",
+      ).length,
+    [rows],
+  );
+
+  const progressDone = useMemo(
+    () =>
+      rows.filter(
+        (row) => row.status !== "formatError" && row.status !== "pending",
+      ).length,
+    [rows],
+  );
+
+  const controlsLocked = scrapeState === "running";
+
+  const scrapeStatusMessage = useMemo(() => {
+    if (scrapeState === "running") {
+      return "抓取中…";
+    }
+    if (scrapeState === "paused" && pendingCount > 0) {
+      return `已暂停，还剩 ${pendingCount} 条待抓取`;
+    }
+    if (scrapeState === "done") {
+      return "抓取已完成";
+    }
+    return null;
+  }, [scrapeState, pendingCount]);
+
   const successCount = useMemo(
-    () => rows.filter((row) => row.status === "Success").length,
+    () => rows.filter((row) => row.status === "success").length,
     [rows],
   );
 
   const failedCount = useMemo(
     () =>
       rows.filter((row) =>
-        ["Failed", "Unavailable", "NoPrice", "Mismatch"].includes(row.status),
+        ["failed", "unavailable", "noPrice", "mismatch"].includes(row.status),
       ).length,
     [rows],
   );
@@ -209,11 +217,66 @@ function App() {
     }
   };
 
+  const resetRowsToPending = useCallback((current: RowResult[]) => {
+    return current.map((row) =>
+      row.status === "formatError"
+        ? row
+        : {
+            ...row,
+            status: "pending" as const,
+            priceText: null,
+            priceValue: null,
+            error: null,
+            fetchedAt: null,
+          },
+    );
+  }, []);
+
+  const runNextChunk = useCallback(
+    async (sourceRows: RowResult[]) => {
+      const pending = sourceRows.filter(
+        (row) => row.status !== "formatError" && row.status === "pending",
+      );
+      const chunk = pending.slice(0, CHUNK_SIZE);
+      if (chunk.length === 0) {
+        setScrapeState("done");
+        message.success("抓取完成");
+        return;
+      }
+
+      setScrapeState("running");
+      try {
+        const session = await initSession();
+        setSessionMessage(session.message);
+        const results = await startScrape(chunk, options);
+        const updated = sourceRows.map((row) => {
+          const patch = results.find((result) => result.asin === row.asin);
+          return patch ?? row;
+        });
+        const remaining = updated.filter(
+          (row) => row.status !== "formatError" && row.status === "pending",
+        ).length;
+        setRows(updated);
+        if (remaining > 0) {
+          setScrapeState("paused");
+          message.info(`本片完成，还剩 ${remaining} 条待抓取`);
+        } else {
+          setScrapeState("done");
+          message.success("抓取完成");
+        }
+      } catch (error) {
+        setScrapeState("paused");
+        message.error(`抓取失败: ${String(error)}`);
+      }
+    },
+    [options],
+  );
+
   const applyParseResult = (result: ParseSkusResult, source: "parse" | "upload") => {
     setRows(result.rows);
     setDuplicateCount(result.duplicateCount);
     setInvalidCount(result.invalidCount);
-    setProgress({ done: 0, total: result.rows.length });
+    setScrapeState("idle");
     setReviewIndex(null);
 
     if (result.validCount === 0) {
@@ -264,25 +327,18 @@ function App() {
     }
 
     resetViewedForRescrape();
-    setRunning(true);
-    setProgress({ done: 0, total: rows.length });
-    try {
-      const session = await initSession();
-      setSessionMessage(session.message);
-      const result = await startScrape(rows, options);
-      setRows(result);
-      message.success("抓取完成");
-    } catch (error) {
-      message.error(`抓取失败: ${String(error)}`);
-    } finally {
-      setRunning(false);
-    }
+    const resetRows = resetRowsToPending(rows);
+    setRows(resetRows);
+    await runNextChunk(resetRows);
   };
 
-  const handleCancel = async () => {
+  const handleContinue = async () => {
+    await runNextChunk(rows);
+  };
+
+  const handlePause = async () => {
     await cancelScrape();
-    setRunning(false);
-    message.info("已请求取消");
+    message.info("暂停请求已发送，当前条完成后停止");
   };
 
   const handleRefreshAll = async () => {
@@ -290,16 +346,9 @@ function App() {
       return;
     }
     resetViewedForRescrape();
-    setRunning(true);
-    try {
-      const result = await refreshAll(options);
-      setRows(result);
-      message.success("全部刷新完成");
-    } catch (error) {
-      message.error(String(error));
-    } finally {
-      setRunning(false);
-    }
+    const resetRows = resetRowsToPending(rows);
+    setRows(resetRows);
+    await runNextChunk(resetRows);
   };
 
   const handleExport = async () => {
@@ -454,9 +503,9 @@ function App() {
           <Button
             size="small"
             icon={<ReloadOutlined />}
-            disabled={running || record.status === "FormatError"}
+            disabled={controlsLocked || record.status === "formatError"}
             onClick={async () => {
-              setRunning(true);
+              setScrapeState("running");
               try {
                 const updated = await refreshOne(record, options);
                 setRows((current) =>
@@ -465,7 +514,7 @@ function App() {
               } catch (error) {
                 message.error(String(error));
               } finally {
-                setRunning(false);
+                setScrapeState("idle");
               }
             }}
           >
@@ -505,7 +554,7 @@ function App() {
             type={selfCheckMessage?.includes("通过") ? "success" : "info"}
             showIcon
             message={
-              cooldownMessage ??
+              scrapeStatusMessage ??
               (selfCheckMessage
                 ? `${sessionMessage} · ${selfCheckMessage}`
                 : sessionMessage)
@@ -528,12 +577,20 @@ function App() {
                     onChange={(e) => setInputText(e.target.value)}
                   />
                   <Space wrap>
-                    <Upload beforeUpload={handleUpload} showUploadList={false} accept=".txt">
-                      <Button icon={<UploadOutlined />}>上传 txt</Button>
+                    <Upload
+                      beforeUpload={handleUpload}
+                      showUploadList={false}
+                      accept=".txt"
+                      disabled={controlsLocked}
+                    >
+                      <Button icon={<UploadOutlined />} disabled={controlsLocked}>
+                        上传 txt
+                      </Button>
                     </Upload>
                     <Button
                       type="primary"
                       className="parse-sku-btn"
+                      disabled={controlsLocked}
                       onClick={() => void handleParse()}
                     >
                       解析 SKU
@@ -641,44 +698,42 @@ function App() {
                   />
 
                   <Row gutter={[16, 16]}>
-                    <Col xs={12} md={12}>
+                    <Col span={24}>
                       <Text>抓取间隔</Text>
                       <div>
-                        <Text type="secondary">每 1.5 秒 1 条商品</Text>
+                        <Text type="secondary">每 1.5 秒 1 条商品，每 {CHUNK_SIZE} 条自动暂停</Text>
                       </div>
-                    </Col>
-                    <Col xs={12} md={12}>
-                      <Text>并发数</Text>
-                      <InputNumber
-                        min={1}
-                        max={3}
-                        style={{ width: "100%" }}
-                        value={options.concurrency}
-                        onChange={(value) =>
-                          setOptions((current) => ({
-                            ...current,
-                            concurrency: Number(value ?? 3),
-                          }))
-                        }
-                      />
                     </Col>
                   </Row>
 
                   <Space wrap>
-                    <Button
-                      type="primary"
-                      icon={<PlayCircleOutlined />}
-                      loading={running}
-                      onClick={() => void handleStart()}
-                    >
-                      开始抓取
-                    </Button>
-                    <Button icon={<StopOutlined />} disabled={!running} onClick={() => void handleCancel()}>
-                      取消
-                    </Button>
+                    {(scrapeState === "idle" || scrapeState === "done") && (
+                      <Button
+                        type="primary"
+                        icon={<PlayCircleOutlined />}
+                        disabled={controlsLocked || rows.length === 0}
+                        onClick={() => void handleStart()}
+                      >
+                        开始抓取
+                      </Button>
+                    )}
+                    {scrapeState === "paused" && (
+                      <Button
+                        type="primary"
+                        icon={<PlayCircleOutlined />}
+                        onClick={() => void handleContinue()}
+                      >
+                        继续抓取（剩 {pendingCount} 条）
+                      </Button>
+                    )}
+                    {scrapeState === "running" && (
+                      <Button icon={<StopOutlined />} onClick={() => void handlePause()}>
+                        暂停
+                      </Button>
+                    )}
                     <Button
                       icon={<CloudSyncOutlined />}
-                      disabled={running || rows.length === 0}
+                      disabled={controlsLocked || rows.length === 0}
                       onClick={() => void handleRefreshAll()}
                     >
                       全部刷新
@@ -695,15 +750,15 @@ function App() {
                   <div>
                     <Progress
                       percent={
-                        progress.total > 0
-                          ? Math.round((progress.done / progress.total) * 100)
+                        validCount > 0
+                          ? Math.round((progressDone / validCount) * 100)
                           : 0
                       }
-                      status={running ? "active" : "normal"}
+                      status={scrapeState === "running" ? "active" : "normal"}
                     />
                     <Row gutter={16} style={{ marginTop: 12 }}>
                       <Col span={8}>
-                        <Statistic title="完成" value={progress.done} suffix={`/ ${progress.total}`} />
+                        <Statistic title="完成" value={progressDone} suffix={`/ ${validCount}`} />
                       </Col>
                       <Col span={8}>
                         <Statistic title="成功" value={successCount} />
@@ -745,14 +800,6 @@ function App() {
                 },
               })}
             />
-          </Card>
-
-          <Card title="实时日志" className="panel-card">
-            {logs.length === 0 ? (
-              <Paragraph type="secondary">开始抓取后会在这里显示进度日志。</Paragraph>
-            ) : (
-              logs.map((line, index) => <div key={`${line}-${index}`}>{line}</div>)
-            )}
           </Card>
         </Space>
       </Content>

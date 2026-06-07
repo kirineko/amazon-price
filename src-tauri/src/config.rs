@@ -1,14 +1,11 @@
 pub const AMAZON_BASE: &str = "https://www.amazon.co.jp";
 pub const DEFAULT_ZIP: &str = "150-0001";
 pub const DEFAULT_REQUEST_INTERVAL_MS: u64 = 1500;
-pub const DEFAULT_CONCURRENCY: usize = 3;
 pub const MAX_RETRIES: u32 = 3;
 pub const RETRY_DELAYS_MS: [u64; 3] = [800, 1600, 3200];
 pub const SESSION_CONNECT_TIMEOUT_SECS: u64 = 20;
 pub const SESSION_REQUEST_TIMEOUT_SECS: u64 = 60;
 pub const SESSION_INIT_RETRIES: u32 = 3;
-pub const BATCH_SIZE: usize = 100;
-pub const BATCH_COOLDOWN_SECS: u64 = 30;
 pub const SELF_CHECK_ASIN: &str = "B0DFXQWPPS";
 
 pub const USER_AGENTS: &[&str] = &[

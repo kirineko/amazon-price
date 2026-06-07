@@ -19,12 +19,19 @@ pub struct RowResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum RowStatus {
+    #[serde(alias = "Pending")]
     Pending,
+    #[serde(alias = "Success")]
     Success,
+    #[serde(alias = "Unavailable")]
     Unavailable,
+    #[serde(alias = "NoPrice")]
     NoPrice,
+    #[serde(alias = "Mismatch")]
     Mismatch,
+    #[serde(alias = "FormatError")]
     FormatError,
+    #[serde(alias = "Failed")]
     Failed,
 }
 
@@ -72,7 +79,6 @@ pub struct ProxyConfig {
 pub struct ScrapeOptions {
     pub zip_code: String,
     pub request_interval_ms: u64,
-    pub concurrency: usize,
 }
 
 impl Default for ScrapeOptions {
@@ -80,15 +86,8 @@ impl Default for ScrapeOptions {
         Self {
             zip_code: crate::config::DEFAULT_ZIP.to_string(),
             request_interval_ms: crate::config::DEFAULT_REQUEST_INTERVAL_MS,
-            concurrency: crate::config::DEFAULT_CONCURRENCY,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ScrapePhase {
-    Scraping,
-    Cooling,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,14 +96,6 @@ pub struct ScrapeProgress {
     pub done: usize,
     pub total: usize,
     pub row: RowResult,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase: Option<ScrapePhase>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub batch_index: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub batch_total: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cooldown_secs: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

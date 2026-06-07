@@ -1,11 +1,11 @@
 export type RowStatus =
-  | "Pending"
-  | "Success"
-  | "Unavailable"
-  | "NoPrice"
-  | "Mismatch"
-  | "FormatError"
-  | "Failed";
+  | "pending"
+  | "success"
+  | "unavailable"
+  | "noPrice"
+  | "mismatch"
+  | "formatError"
+  | "failed";
 
 export interface RowResult {
   sku: string;
@@ -31,19 +31,12 @@ export interface ProxyConfig {
 
 export interface ScrapeOptions {
   requestIntervalMs: number;
-  concurrency: number;
 }
-
-export type ScrapePhase = "Scraping" | "Cooling";
 
 export interface ScrapeProgress {
   done: number;
   total: number;
   row: RowResult;
-  phase?: ScrapePhase | null;
-  batchIndex?: number | null;
-  batchTotal?: number | null;
-  cooldownSecs?: number | null;
 }
 
 export interface ParseSkusResult {
@@ -69,21 +62,21 @@ export interface SelfCheckResult {
 }
 
 export const STATUS_LABELS: Record<RowStatus, string> = {
-  Pending: "待处理",
-  Success: "成功",
-  Unavailable: "不可售",
-  NoPrice: "无价",
-  Mismatch: "疑似不匹配",
-  FormatError: "格式错误",
-  Failed: "失败",
+  pending: "待处理",
+  success: "成功",
+  unavailable: "不可售",
+  noPrice: "无价",
+  mismatch: "疑似不匹配",
+  formatError: "格式错误",
+  failed: "失败",
 };
 
 export const STATUS_COLORS: Record<RowStatus, string> = {
-  Pending: "default",
-  Success: "success",
-  Unavailable: "warning",
-  NoPrice: "warning",
-  Mismatch: "warning",
-  FormatError: "error",
-  Failed: "error",
+  pending: "default",
+  success: "success",
+  unavailable: "warning",
+  noPrice: "warning",
+  mismatch: "warning",
+  formatError: "error",
+  failed: "error",
 };

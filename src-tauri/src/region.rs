@@ -582,15 +582,6 @@ pub fn parse_yen_value(text: &str) -> Option<u64> {
     parse_price_value(text)
 }
 
-pub fn batch_plan(scrapeable_count: usize) -> (bool, usize) {
-    if scrapeable_count > config::BATCH_SIZE {
-        let batch_total = scrapeable_count.div_ceil(config::BATCH_SIZE);
-        (true, batch_total)
-    } else {
-        (false, 1)
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct AddressChangeResponse {
     address: Option<AddressInfo>,
@@ -709,15 +700,5 @@ mod tests {
             password: None,
         };
         assert!(AmazonSession::new("150-0001", &config).is_err());
-    }
-
-    #[test]
-    fn batch_plan_splits_over_100() {
-        let (enabled, total) = batch_plan(250);
-        assert!(enabled);
-        assert_eq!(total, 3);
-        let (enabled, total) = batch_plan(100);
-        assert!(!enabled);
-        assert_eq!(total, 1);
     }
 }

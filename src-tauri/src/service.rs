@@ -101,16 +101,14 @@ pub async fn start_scrape(
         &mut session,
         rows,
         opts.request_interval_ms,
-        opts.concurrency,
         std::sync::Arc::clone(&state.cancel_flag),
         on_progress,
-        true,
     )
     .await
     .map_err(|e| crate::config::friendly_network_error(e))?;
 
     *state.session.lock() = Some(session);
-    *state.last_rows.lock() = results.clone();
+    merge_rows_into_last(state, &results);
     Ok(results)
 }
 
@@ -137,10 +135,8 @@ pub async fn refresh_one(
         &mut session,
         vec![row],
         opts.request_interval_ms,
-        1,
         std::sync::Arc::clone(&state.cancel_flag),
         on_progress,
-        false,
     )
     .await
     .map_err(|e| crate::config::friendly_network_error(e))?;
@@ -195,6 +191,7 @@ pub fn export_csv(rows: &[RowResult]) -> String {
 }
 
 pub fn cancel_scrape(state: &AppState) {
+    // Soft-stop: current row finishes, remaining rows in the chunk stay Pending.
     state.cancel_flag.store(true, Ordering::SeqCst);
 }
 
@@ -216,6 +213,21 @@ pub async fn run_self_check(
         currency,
         message,
     })
+}
+
+fn merge_rows_into_last(state: &AppState, updates: &[RowResult]) {
+    let mut last = state.last_rows.lock();
+    if last.is_empty() {
+        *last = updates.to_vec();
+        return;
+    }
+    for updated in updates {
+        if let Some(row) = last.iter_mut().find(|row| row.asin == updated.asin) {
+            *row = updated.clone();
+        } else {
+            last.push(updated.clone());
+        }
+    }
 }
 
 fn csv_escape(value: &str) -> String {
